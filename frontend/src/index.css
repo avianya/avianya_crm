@@ -1,0 +1,188 @@
+/* ===========================================================================
+   Global styles and design tokens.
+
+   Tailwind v4 is configured entirely from CSS -- there is no tailwind.config.js.
+   @import pulls in the framework, @theme registers our own design tokens (which
+   become utility classes like `text-brand-600`), and @custom-variant switches
+   dark mode from Tailwind's default "follow the OS" to "follow a class on
+   <html>", so the theme toggle in the header can override the OS preference.
+   =========================================================================== */
+
+@import "tailwindcss";
+
+/* `dark:` applies when <html> has class="dark", or to anything inside it.
+   ThemeProvider is what puts that class there. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+    /* Brand accent. A single hue used for primary actions, active nav and focus
+       rings, so the interface has one obvious "this is clickable" colour. */
+    --color-brand-50: #eef2ff;
+    --color-brand-100: #e0e7ff;
+    --color-brand-200: #c7d2fe;
+    --color-brand-300: #a5b4fc;
+    --color-brand-400: #818cf8;
+    --color-brand-500: #6366f1;
+    --color-brand-600: #4f46e5;
+    --color-brand-700: #4338ca;
+    --color-brand-800: #3730a3;
+    --color-brand-900: #312e81;
+    --color-brand-950: #1e1b4b;
+
+    /* Fonts. A system stack renders instantly and needs no network request,
+       which keeps the app working offline and avoids a flash of unstyled text. */
+    --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+        "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+    --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+    /* Animations used by the modal, toasts and the timeline. */
+    --animate-fade-in: fade-in 0.18s ease-out;
+    --animate-scale-in: scale-in 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+    --animate-slide-up: slide-up 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+    --animate-slide-in-right: slide-in-right 0.24s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes fade-in {
+    from {
+        opacity: 0;
+    }
+    to {
+        opacity: 1;
+    }
+}
+
+@keyframes scale-in {
+    from {
+        opacity: 0;
+        transform: scale(0.96) translateY(6px);
+    }
+    to {
+        opacity: 1;
+        transform: scale(1) translateY(0);
+    }
+}
+
+@keyframes slide-up {
+    from {
+        opacity: 0;
+        transform: translateY(10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+@keyframes slide-in-right {
+    from {
+        opacity: 0;
+        transform: translateX(16px);
+    }
+    to {
+        opacity: 1;
+        transform: translateX(0);
+    }
+}
+
+/* ---------------------------------------------------------------------------
+   Base layer
+   --------------------------------------------------------------------------- */
+
+@layer base {
+    /* Ask the browser to render native widgets (scrollbars, form controls,
+       autofill) in the matching theme. Without this you get a white scrollbar
+       against a dark page. */
+    :root {
+        color-scheme: light;
+    }
+
+    .dark {
+        color-scheme: dark;
+    }
+
+    html {
+        /* Anchor links and programmatic scrolls glide instead of jumping... */
+        scroll-behavior: smooth;
+        -webkit-text-size-adjust: 100%;
+    }
+
+    body {
+        @apply bg-slate-50 font-sans text-slate-900 antialiased;
+        @apply dark:bg-slate-950 dark:text-slate-100;
+    }
+
+    /* ...unless the visitor has asked their OS to reduce motion, in which case
+       every animation and transition in the app collapses to near-instant.
+       Motion preferences are an accessibility requirement, not a nicety. */
+    @media (prefers-reduced-motion: reduce) {
+        html {
+            scroll-behavior: auto;
+        }
+
+        *,
+        *::before,
+        *::after {
+            animation-duration: 0.01ms !important;
+            animation-iteration-count: 1 !important;
+            transition-duration: 0.01ms !important;
+        }
+    }
+
+    /* One consistent focus ring for every keyboard-focusable element.
+       :focus-visible (not :focus) means mouse users don't see rings on click,
+       but keyboard users always can see where they are. */
+    :focus-visible {
+        @apply outline-2 outline-offset-2 outline-brand-500;
+    }
+
+    /* Numbers in stat cards and tables line up column-wise instead of jittering
+       as the digits change. */
+    .tabular {
+        font-variant-numeric: tabular-nums;
+    }
+}
+
+/* ---------------------------------------------------------------------------
+   Utilities
+   --------------------------------------------------------------------------- */
+
+/* Visible only to screen readers: used for labels that would be redundant on
+   screen but are needed to announce a control. */
+@utility sr-only-focusable {
+    &:not(:focus):not(:focus-within) {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip-path: inset(50%);
+        white-space: nowrap;
+    }
+}
+
+/* The dropdown arrow for <select>.
+ *
+ * `appearance: none` removes the browser's own arrow (which cannot be styled
+ * consistently across platforms) and this draws a replacement. The SVG is an
+ * inlined data URI, so it costs no extra HTTP request.
+ *
+ * It lives here rather than as an arbitrary `bg-[url('data:…')]` class because
+ * Tailwind's class scanner cannot parse a data URI containing quotes and
+ * parentheses -- the utility is silently dropped and no arrow appears. */
+@utility select-chevron {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 0.65rem center;
+    background-size: 1rem 1rem;
+}
+
+/* A restrained scrollbar for the few panes that scroll internally. */
+@utility scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-slate-300) transparent;
+
+    .dark & {
+        scrollbar-color: var(--color-slate-700) transparent;
+    }
+}

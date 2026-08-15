@@ -1,0 +1,115 @@
+# =============================================================================
+# The whole stack in one command:
+#
+#   docker compose up --build
+#
+# Then open http://localhost:5173
+#
+# The database schema and demo data are applied automatically on first start --
+# see the note on docker-entrypoint-initdb.d below.
+# =============================================================================
+
+services:
+    # -------------------------------------------------------------------------
+    # PostgreSQL
+    # -------------------------------------------------------------------------
+    db:
+        image: postgres:17-alpine
+        container_name: crm-db
+        restart: unless-stopped
+
+        environment:
+            POSTGRES_USER: crm
+            POSTGRES_PASSWORD: crm_password
+            POSTGRES_DB: crm_leads
+
+        ports:
+            # Exposed so you can connect with psql or a GUI while it runs.
+            # 5433 on the host, not 5432, to avoid colliding with a PostgreSQL
+            # you may already have installed locally.
+            - "5433:5432"
+
+        volumes:
+            # Everything in this directory is executed, in filename order, the
+            # first time the data volume is empty -- which is why the files are
+            # numbered. It does NOT re-run on later starts, so to reset the
+            # database you have to remove the volume:
+            #     docker compose down -v
+            - ./db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+            - ./db/seed.sql:/docker-entrypoint-initdb.d/02-seed.sql:ro
+            # Named volume: the data survives `docker compose down`.
+            - crm_db_data:/var/lib/postgresql/data
+
+        healthcheck:
+            # The API's depends_on waits for this. Postgres accepts TCP
+            # connections several seconds before it is ready to run queries, so
+            # without a real readiness check the API starts too early and dies.
+            test: ["CMD-SHELL", "pg_isready -U crm -d crm_leads"]
+            interval: 5s
+            timeout: 5s
+            retries: 10
+            start_period: 10s
+
+    # -------------------------------------------------------------------------
+    # Go API
+    # -------------------------------------------------------------------------
+    api:
+        build:
+            context: ./backend
+        container_name: crm-api
+        restart: unless-stopped
+
+        environment:
+            APP_ENV: production
+            PORT: "8080"
+            # Host is "db" -- compose gives each service a DNS name on the shared
+            # network, and the port is the container's 5432, not the host's 5433.
+            # Host is "db", NOT localhost. Compose gives each service a DNS name
+            # on the shared network; inside this container "localhost" is the API
+            # itself, so localhost:5432 would find nothing.
+            #
+            # The port is the container's own 5432, not the host's 5433 -- the
+            # port mapping only applies to traffic coming from your machine.
+            #
+            # The credentials are the ones the db service creates above
+            # (POSTGRES_USER / POSTGRES_PASSWORD), not postgres/postgres.
+            DATABASE_URL: postgres://crm:crm_password@db:5432/crm_leads?sslmode=disable
+            # The browser talks to the frontend on localhost:5173, so that is the
+            # origin the API must allow. It is not the frontend container's name:
+            # CORS is about where the *browser* loaded the page from.
+            CORS_ALLOWED_ORIGINS: http://localhost:5173
+
+        ports:
+            - "8080:8080"
+
+        depends_on:
+            db:
+                # Waits for the healthcheck above to pass, not merely for the
+                # container to start.
+                condition: service_healthy
+
+    # -------------------------------------------------------------------------
+    # React frontend (built and served by nginx)
+    # -------------------------------------------------------------------------
+    web:
+        build:
+            context: ./frontend
+            args:
+                # Baked into the JavaScript bundle at build time. This is the URL
+                # the user's BROWSER will call, so it is localhost -- the browser
+                # is outside the compose network and cannot resolve "api".
+                VITE_API_BASE_URL: http://localhost:8080/api
+        container_name: crm-web
+        restart: unless-stopped
+
+        ports:
+            # 5173 on the host to match the URL in CORS_ALLOWED_ORIGINS and the
+            # port used by `npm run dev`, so the app lives at the same address
+            # either way you run it.
+            - "5173:80"
+
+        depends_on:
+            - api
+
+volumes:
+    crm_db_data:

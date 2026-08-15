@@ -1,0 +1,10 @@
+# node_modules is the big one: excluding it keeps the build context small and
+# forces the image to install dependencies for its own platform via `npm ci`.
+node_modules
+dist
+.env
+.env.*
+!.env.example
+Dockerfile
+.dockerignore
+*.log

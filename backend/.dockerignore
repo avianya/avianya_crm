@@ -1,0 +1,8 @@
+# Keep the build context small and never ship secrets into an image layer.
+.env
+.env.*
+!.env.example
+*_test.go
+Dockerfile
+.dockerignore
+README.md

@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <meta
+            name="description"
+            content="Lead management and lifecycle tracking - React, Go and PostgreSQL."
+        />
+
+        <!--
+          Paints the browser UI (address bar on mobile) to match the app, and tells
+          it we support both themes. The two media queries let it pick the right one.
+        -->
+        <meta name="color-scheme" content="light dark" />
+        <meta
+            name="theme-color"
+            media="(prefers-color-scheme: light)"
+            content="#f8fafc"
+        />
+        <meta
+            name="theme-color"
+            media="(prefers-color-scheme: dark)"
+            content="#020617"
+        />
+
+        <title>Pipeline · Lead CRM</title>
+
+        <script>
+            /*
+              Applies the saved theme before the first paint.
+
+              This has to be a blocking inline script in <head>: if React applied
+              the dark class after mounting, a dark-mode user would see a flash of
+              white page first. ThemeProvider takes over from here.
+            */
+            (function () {
+                try {
+                    var stored = localStorage.getItem("crm-theme");
+                    var prefersDark = window.matchMedia(
+                        "(prefers-color-scheme: dark)",
+                    ).matches;
+                    if (stored === "dark" || (stored !== "light" && prefersDark)) {
+                        document.documentElement.classList.add("dark");
+                    }
+                } catch (e) {
+                    /* localStorage can be blocked; the default theme is fine. */
+                }
+            })();
+        </script>
+    </head>
+    <body>
+        <div id="root"></div>
+        <script type="module" src="/src/main.tsx"></script>
+    </body>
+</html>
