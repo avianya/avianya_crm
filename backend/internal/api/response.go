@@ -55,6 +55,22 @@ const (
 	codeNotFound        = "not_found"
 	codeConflict        = "conflict"
 	codeInternalError   = "internal_error"
+
+	// The admin key is missing or wrong (401/403), or not set up (503).
+	codeAdminRequired = "admin_required"
+
+	// Not logged in (401), or logged in without the role for this (403).
+	codeUnauthenticated = "unauthenticated"
+	codeForbidden       = "forbidden"
+
+	// SECRETS_ENCRYPTION_KEY is not set, so a credential cannot be saved.
+	codeEncryptionNotSetUp = "encryption_not_set_up"
+
+	// Meta refused or could not be reached; the message is Meta's own.
+	codeMetaError = "meta_error"
+
+	// Too many requests from one caller (429).
+	codeRateLimited = "rate_limited"
 )
 
 // respondData writes a successful single-object (or single-value) response.
@@ -99,12 +115,44 @@ func respondValidationError(c *gin.Context, errs model.ValidationErrors) {
 // treated as a bug in our own code: log the real cause, tell the client only
 // that something broke.
 func (h *Handler) respondStoreError(c *gin.Context, err error, action string) {
+	var fieldErr *store.FieldError
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		respondError(c, http.StatusNotFound, codeNotFound, "The requested resource was not found.")
 
 	case errors.Is(err, store.ErrDuplicateEmail):
 		respondError(c, http.StatusConflict, codeConflict, "A lead with this email address already exists.")
+
+	case errors.Is(err, store.ErrDuplicateMemberEmail):
+		respondError(c, http.StatusConflict, codeConflict, "A team member with this email address already exists.")
+
+	case errors.Is(err, store.ErrNotRetryable):
+		respondError(c, http.StatusConflict, codeConflict, "This email has already been sent or is queued to send.")
+
+	case errors.Is(err, store.ErrTaskCompleted):
+		respondError(c, http.StatusConflict, codeConflict, "This event is already completed. Reopen it before cancelling.")
+
+	case errors.Is(err, store.ErrActivityLocked):
+		respondError(c, http.StatusConflict, codeConflict,
+			"Only notes, calls, emails and meetings you logged can be edited or deleted. This entry was recorded automatically.")
+
+	case errors.Is(err, store.ErrNoEncryptionKey):
+		respondError(c, http.StatusServiceUnavailable, codeEncryptionNotSetUp,
+			"Credentials cannot be saved: set SECRETS_ENCRYPTION_KEY on the server and restart it.")
+
+	case errors.Is(err, store.ErrMetaNotTested):
+		respondError(c, http.StatusConflict, codeConflict,
+			"Run Test Connection successfully before turning test mode off.")
+
+	case errors.Is(err, store.ErrLastAdmin):
+		respondError(c, http.StatusConflict, codeConflict,
+			"This is the last active admin who can log in. Make someone else an admin first.")
+
+	case errors.Is(err, store.ErrCAPINotRetryable):
+		respondError(c, http.StatusConflict, codeConflict, "Only a failed or scheduled event can be retried.")
+
+	case errors.As(err, &fieldErr):
+		respondValidationError(c, model.ValidationErrors{fieldErr.Field: fieldErr.Message})
 
 	default:
 		// The full error, with its wrapped chain, goes to the server log where

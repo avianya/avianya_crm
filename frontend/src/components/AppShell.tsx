@@ -1,17 +1,33 @@
 import { useState } from "react";
-import { NavLink, Outlet } from "react-router-dom";
+import { Link, NavLink, Outlet } from "react-router-dom";
 import {
+    BrainCircuit,
+    CalendarDays,
+    ChartColumn,
+    Handshake,
     LayoutDashboard,
+    ListTodo,
+    LogOut,
+    Mail,
+    Megaphone,
     Menu,
     Monitor,
     Moon,
+    PhoneForwarded,
+    Plug,
+    SquareKanban,
     Sun,
     Target,
     Users,
+    UsersRound,
     X,
+    Zap,
 } from "lucide-react";
 
 import { useTheme } from "../context/theme";
+import { ROLE_LABELS, useAuth } from "../context/auth";
+import type { Role } from "../lib/types";
+import { NotificationBell } from "./NotificationBell";
 import { cx } from "../lib/display";
 import type { ThemePreference } from "../context/theme";
 
@@ -74,8 +90,8 @@ export function AppShell() {
 
             {/* --- Main column --- */}
             <div className="lg:pl-60">
-                {/* Sticky header. On desktop it only carries the theme toggle; on
-                    mobile it also holds the hamburger. */}
+                {/* Sticky header: reminders and the theme toggle; on mobile it
+                    also holds the hamburger. */}
                 <header className="sticky top-0 z-20 flex h-14 items-center justify-between gap-3 border-b border-slate-200 bg-slate-50/85 px-4 backdrop-blur-md sm:px-6 dark:border-slate-800 dark:bg-slate-950/85">
                     <button
                         type="button"
@@ -90,8 +106,10 @@ export function AppShell() {
                         Pipeline CRM
                     </span>
 
-                    <div className="ml-auto">
+                    <div className="ml-auto flex items-center gap-2">
+                        <NotificationBell />
                         <ThemeToggle />
+                        <UserMenu />
                     </div>
                 </header>
 
@@ -123,15 +141,31 @@ function Brand() {
     );
 }
 
-const NAV_ITEMS = [
+const ADMIN: Role[] = ["admin"];
+
+/** roles: only shown to these (the server refuses the rest anyway). */
+const NAV_ITEMS: { to: string; label: string; icon: typeof Users; end: boolean; roles?: Role[] }[] = [
     { to: "/", label: "Dashboard", icon: LayoutDashboard, end: true },
+    { to: "/follow-ups", label: "Follow-ups", icon: PhoneForwarded, end: false },
     { to: "/leads", label: "Leads", icon: Users, end: false },
+    { to: "/meta-leads", label: "Meta Leads", icon: Megaphone, end: false },
+    { to: "/deals", label: "Deals", icon: Handshake, end: false },
+    { to: "/pipeline", label: "Pipeline", icon: SquareKanban, end: false },
+    { to: "/sales-intelligence", label: "Intelligence", icon: BrainCircuit, end: false },
+    { to: "/tasks", label: "Tasks", icon: ListTodo, end: false },
+    { to: "/schedule", label: "Schedule", icon: CalendarDays, end: false },
+    { to: "/reports", label: "Reports", icon: ChartColumn, end: false },
+    { to: "/templates", label: "Templates", icon: Mail, end: false },
+    { to: "/automations", label: "Automations", icon: Zap, end: false, roles: ADMIN },
+    { to: "/integrations", label: "Integrations", icon: Plug, end: false, roles: ADMIN },
+    { to: "/team", label: "Team", icon: UsersRound, end: false },
 ];
 
 function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
+    const { is } = useAuth();
     return (
         <nav className="flex-1 space-y-1 px-3 py-4" aria-label="Main">
-            {NAV_ITEMS.map((item) => (
+            {NAV_ITEMS.filter((item) => !item.roles || is(...item.roles)).map((item) => (
                 <NavLink
                     key={item.to}
                     to={item.to}
@@ -160,13 +194,36 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
 }
 
 function SidebarFooter() {
+    const { user, is } = useAuth();
     return (
         <div className="border-t border-slate-200 px-5 py-4 dark:border-slate-800">
             <p className="text-[11px] leading-relaxed text-slate-400 dark:text-slate-500">
-                React + Go + PostgreSQL
+                Logged in as {ROLE_LABELS[user.role]}
                 <br />
-                No auth — all data is shared.
+                {is("sales") ? "You see the leads assigned to you." : "You see every lead."}
             </p>
+        </div>
+    );
+}
+
+/** Who is logged in, and the way out. */
+function UserMenu() {
+    const { user, logout } = useAuth();
+    return (
+        <div className="flex items-center gap-2 border-l border-slate-200 pl-3 dark:border-slate-800">
+            <Link to="/account" className="hidden text-right leading-tight hover:opacity-80 sm:block" title="My account">
+                <p className="text-xs font-medium text-slate-800 dark:text-slate-100">{user.name}</p>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400">{ROLE_LABELS[user.role]}</p>
+            </Link>
+            <button
+                type="button"
+                onClick={() => void logout()}
+                className="flex size-9 items-center justify-center rounded-lg text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-100"
+                aria-label="Log out"
+                title="Log out"
+            >
+                <LogOut className="size-4.5" aria-hidden="true" />
+            </button>
         </div>
     );
 }

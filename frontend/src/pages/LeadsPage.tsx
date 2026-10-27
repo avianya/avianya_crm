@@ -4,6 +4,8 @@ import {
     ArrowDown,
     ArrowUp,
     ChevronRight,
+    Download,
+    FileUp,
     Mail,
     Pencil,
     Phone,
@@ -16,8 +18,12 @@ import {
     X,
 } from "lucide-react";
 
-import { ApiError, api } from "../lib/api";
+import { ApiError, api, saveFile } from "../lib/api";
 import {
+    BAND_ORDER,
+    BAND_STYLES,
+    QUALITY_ORDER,
+    QUALITY_STYLES,
     SOURCE_STYLES,
     STAGE_ORDER,
     STAGE_STYLES,
@@ -26,21 +32,30 @@ import {
     formatDate,
     formatRelative,
     initials,
+    todayISODate,
 } from "../lib/display";
-import type { Lead, LeadInput, LeadListParams, Source, Stage } from "../lib/types";
+import type { BulkInput, Lead, LeadInput, LeadListParams, Quality, ScoreBand, Source, Stage } from "../lib/types";
+import { CapiStatusBadge, QualityBadge } from "../components/QualityBadges";
+import { useAuth } from "../context/auth";
 import { useAsync } from "../hooks/useAsync";
+import { useCloseReasonPrompt } from "../hooks/useCloseReasonPrompt";
 import { useDebouncedValue } from "../hooks/useDebouncedValue";
+import { memberName, useTeam } from "../hooks/useTeam";
 import { useToast } from "../context/toast";
+import { BulkActionBar } from "../components/BulkActionBar";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { ImportLeadsModal } from "../components/ImportLeadsModal";
 import { LeadFormModal } from "../components/LeadFormModal";
 import { Pagination } from "../components/Pagination";
 import { StagePicker } from "../components/StagePicker";
+import { HealthBadge, ScorePill, StuckBadge } from "../components/LeadInsights";
 import {
     Button,
     Card,
     EmptyState,
     ErrorState,
     PageHeader,
+    RefreshError,
     Select,
     Skeleton,
     Spinner,
@@ -48,6 +63,9 @@ import {
 } from "../components/ui";
 
 type SortField = NonNullable<LeadListParams["sort_by"]>;
+
+/** Mirrors model.MaxScoredLeads: the most leads one export holds. */
+const MAX_EXPORT = 10_000;
 
 /**
  * The leads list: search, filter, sort, paginate, change stage inline.
@@ -58,6 +76,9 @@ type SortField = NonNullable<LeadListParams["sort_by"]>;
  * to "/leads?stage=negotiation" without this page needing to know about it.
  */
 export function LeadsPage() {
+    const { is } = useAuth();
+    // Assigning, reassigning and deleting are for admins and managers.
+    const canAssign = is("admin", "manager");
     const [searchParams, setSearchParams] = useSearchParams();
     const toast = useToast();
 
@@ -65,6 +86,12 @@ export function LeadsPage() {
     const searchParam = searchParams.get("search") ?? "";
     const stage = (searchParams.get("stage") ?? "all") as Stage | "all";
     const source = (searchParams.get("source") ?? "all") as Source | "all";
+    // "all", "none" (unowned) or a team member's id.
+    const owner = searchParams.get("owner") ?? "all";
+    const ownerFilter: LeadListParams["owner"] =
+        owner === "none" ? "none" : /^[1-9]\d*$/.test(owner) ? Number(owner) : undefined;
+    const band = (searchParams.get("band") ?? "all") as ScoreBand | "all";
+    const quality = (searchParams.get("quality") ?? "all") as Quality | "all";
     const sortBy = (searchParams.get("sort_by") ?? "created_at") as SortField;
     const sortDir = (searchParams.get("sort_dir") ?? "desc") as "asc" | "desc";
     const page = Math.max(1, Number(searchParams.get("page") ?? "1") || 1);
@@ -74,7 +101,11 @@ export function LeadsPage() {
     const [searchInput, setSearchInput] = useState(searchParam);
     const debouncedSearch = useDebouncedValue(searchInput, 300);
 
-    const [showFilters, setShowFilters] = useState(false);
+    // Opens with the panel showing when the link already filters by owner,
+    // so the filter in force is visible.
+    const [showFilters, setShowFilters] = useState(owner !== "all" || band !== "all" || quality !== "all");
+    const team = useTeam();
+    const closeReason = useCloseReasonPrompt();
 
     // --- dialogs and per-row busy state ------------------------------------
     const [formOpen, setFormOpen] = useState(false);
@@ -82,6 +113,14 @@ export function LeadsPage() {
     const [deleting, setDeleting] = useState<Lead | undefined>();
     // Which row is mid-stage-change, so only that row shows a spinner.
     const [stageBusyId, setStageBusyId] = useState<number | null>(null);
+    const [importOpen, setImportOpen] = useState(false);
+    const [exporting, setExporting] = useState(false);
+
+    // Ticked leads, for the bulk action bar. Only rows on this page can be
+    // ticked, so a new page or filter starts with none.
+    const [selected, setSelected] = useState<Set<number>>(() => new Set());
+    const [bulkBusy, setBulkBusy] = useState(false);
+    const [bulkDeleting, setBulkDeleting] = useState(false);
 
     /**
      * Writes filter changes back to the URL.
@@ -114,33 +153,169 @@ export function LeadsPage() {
         [setSearchParams],
     );
 
-    // Push the debounced search term into the URL once typing settles. The
-    // equality guard is what stops this from looping: without it, every URL
-    // change would re-run the effect that caused it.
+    // The URL is the source of truth: when it changes from outside the input
+    // (Clear filters, Back/Forward, a link), the input follows it.
     useEffect(() => {
-        if (debouncedSearch === searchParam) return;
+        setSearchInput(searchParam);
+    }, [searchParam]);
+
+    // Push the debounced search term into the URL once typing settles. Both
+    // guards matter: waiting until the debounced value has caught up with the
+    // input stops a just-cleared search from being written back for 300ms, and
+    // the equality check stops the effect re-running on its own URL change.
+    useEffect(() => {
+        if (debouncedSearch !== searchInput || debouncedSearch === searchParam) return;
         updateParams({ search: debouncedSearch });
-    }, [debouncedSearch, searchParam, updateParams]);
+    }, [debouncedSearch, searchInput, searchParam, updateParams]);
 
     // --- data ---------------------------------------------------------------
     const { data, error, loading, fetching, refetch, setData } = useAsync(
         (signal) =>
             api.listLeads(
-                { search: searchParam, stage, source, sort_by: sortBy, sort_dir: sortDir, page },
+                { search: searchParam, stage, source, owner: ownerFilter, band, quality, sort_by: sortBy, sort_dir: sortDir, page },
                 signal,
             ),
-        [searchParam, stage, source, sortBy, sortDir, page],
+        [searchParam, stage, source, ownerFilter, band, quality, sortBy, sortDir, page],
     );
 
+    // A page past the end -- the last row of the last page was just deleted,
+    // or an old ?page= link -- steps back to the real last page instead of
+    // showing an empty list with no pagination.
+    const totalPages = data?.pagination.total_pages ?? 0;
+    useEffect(() => {
+        if (totalPages > 0 && page > totalPages) {
+            updateParams({ page: String(totalPages) }, false);
+        }
+    }, [page, totalPages, updateParams]);
+
     const leads = data?.data ?? [];
-    const hasActiveFilters = Boolean(searchParam) || stage !== "all" || source !== "all";
+    const hasActiveFilters =
+        Boolean(searchParam) ||
+        stage !== "all" ||
+        source !== "all" ||
+        ownerFilter !== undefined ||
+        band !== "all" ||
+        quality !== "all";
+
+    useEffect(() => {
+        setSelected(new Set());
+    }, [searchParam, stage, source, ownerFilter, band, quality, sortBy, sortDir, page]);
+
+    // --- selection and bulk actions ------------------------------------------
+
+    const selectedLeads = leads.filter((lead) => selected.has(lead.id));
+    const allOnPageSelected = leads.length > 0 && selectedLeads.length === leads.length;
+
+    const toggleSelected = (id: number) =>
+        setSelected((current) => {
+            const next = new Set(current);
+            if (next.has(id)) next.delete(id);
+            else next.add(id);
+            return next;
+        });
+
+    const togglePage = () => setSelected(allOnPageSelected ? new Set() : new Set(leads.map((lead) => lead.id)));
+
+    /**
+     * Sends one bulk change and reports it. Leads that could not be changed
+     * stay ticked, so the person can see which and try again.
+     */
+    const runBulk = async (input: BulkInput, describe: (count: number) => string) => {
+        setBulkBusy(true);
+        try {
+            const result = await api.bulkLeads(input);
+            if (result.changed > 0) toast.success(describe(result.changed));
+            if (result.failed.length > 0) {
+                const first = result.failed[0];
+                const name = leads.find((lead) => lead.id === first.id)?.name ?? "A lead";
+                toast.error(
+                    result.failed.length === 1
+                        ? `${name} was not changed: ${first.message}`
+                        : `${result.failed.length} leads were not changed. ${name}: ${first.message}`,
+                );
+            }
+            setSelected(new Set(result.failed.map((f) => f.id)));
+            refetch();
+        } catch (cause) {
+            toast.error(cause instanceof ApiError ? cause.message : "Could not change the leads.");
+        } finally {
+            setBulkBusy(false);
+        }
+    };
+
+    const leadsWord = (count: number) => (count === 1 ? "1 lead" : `${count} leads`);
+    const ids = selectedLeads.map((lead) => lead.id);
+
+    const bulkOwner = (ownerId: number | null) =>
+        runBulk({ ids, action: "owner", owner_id: ownerId }, (n) =>
+            ownerId === null
+                ? `${leadsWord(n)} now unowned.`
+                : `${leadsWord(n)} given to ${memberName(team.data, ownerId) ?? "the new owner"}.`,
+        );
+
+    const bulkStage = async (next: Stage) => {
+        // Won and Lost ask why once, for all of them.
+        const first = selectedLeads[0];
+        if (!first) return;
+        const close = await closeReason.ask({ ...first, name: leadsWord(ids.length) }, next);
+        if (close === null) return;
+        await runBulk({ ids, action: "stage", stage: next, ...close }, (n) =>
+            `${leadsWord(n)} moved to ${STAGE_STYLES[next].label}.`,
+        );
+    };
+
+    const bulkSource = (next: Source) =>
+        runBulk({ ids, action: "source", source: next }, (n) =>
+            `${leadsWord(n)} now from ${SOURCE_STYLES[next].label}.`,
+        );
+
+    const bulkDelete = async () => {
+        await runBulk({ ids, action: "delete" }, (n) => `${leadsWord(n)} deleted.`);
+    };
+
+    const exportSelected = async () => {
+        setBulkBusy(true);
+        try {
+            const file = await api.exportLeads({ ids: ids.join(","), sort_by: sortBy, sort_dir: sortDir });
+            saveFile(file, `leads-${todayISODate()}.csv`);
+        } catch (cause) {
+            toast.error(cause instanceof ApiError ? cause.message : "Could not export the leads.");
+        } finally {
+            setBulkBusy(false);
+        }
+    };
+
+    // --- export -------------------------------------------------------------
+
+    /** Every lead matching the filters and sort, not just this page. */
+    const exportCSV = async () => {
+        setExporting(true);
+        try {
+            const file = await api.exportLeads({
+                search: searchParam, stage, source, owner: ownerFilter, band, quality, sort_by: sortBy, sort_dir: sortDir,
+            });
+            saveFile(file, `leads-${todayISODate()}.csv`);
+            const total = data?.pagination.total_items ?? 0;
+            if (total > MAX_EXPORT) {
+                toast.error(`Only the first ${MAX_EXPORT.toLocaleString("en-IN")} of ${total.toLocaleString("en-IN")} leads were exported. Filter the list to export the rest.`);
+            }
+        } catch (cause) {
+            toast.error(cause instanceof ApiError ? cause.message : "Could not export the leads.");
+        } finally {
+            setExporting(false);
+        }
+    };
 
     // --- mutations ----------------------------------------------------------
 
     const handleStageChange = async (lead: Lead, next: Stage) => {
+        // Won and Lost ask why first; cancelling leaves the lead as it was.
+        const close = await closeReason.ask(lead, next);
+        if (close === null) return;
+
         setStageBusyId(lead.id);
         try {
-            const updated = await api.updateLeadStage(lead.id, next);
+            const updated = await api.updateLeadStage(lead.id, next, close);
 
             // Patch the one row in place from the server's response instead of
             // refetching the page. The result is the same data with no flicker,
@@ -200,8 +375,8 @@ export function LeadsPage() {
         if (sortBy === field) {
             updateParams({ sort_dir: sortDir === "asc" ? "desc" : "asc" }, false);
         } else {
-            // Text sorts read better A→Z; dates and stages read better newest or
-            // furthest-along first.
+            // Text sorts read better A→Z; dates, stages and scores read better
+            // newest, furthest-along or hottest first.
             const naturalDirection = field === "name" || field === "company" ? "asc" : "desc";
             updateParams({ sort_by: field, sort_dir: naturalDirection }, false);
         }
@@ -217,16 +392,31 @@ export function LeadsPage() {
                         : "Loading…"
                 }
                 action={
-                    <Button
-                        variant="primary"
-                        onClick={() => {
-                            setEditing(undefined);
-                            setFormOpen(true);
-                        }}
-                    >
-                        <Plus className="size-4" aria-hidden="true" />
-                        New lead
-                    </Button>
+                    <div className="flex flex-wrap gap-2">
+                        <Button onClick={() => setImportOpen(true)}>
+                            <FileUp className="size-4" aria-hidden="true" />
+                            Import
+                        </Button>
+                        <Button
+                            onClick={exportCSV}
+                            loading={exporting}
+                            disabled={exporting || !data || data.pagination.total_items === 0}
+                            title={hasActiveFilters ? "Export the leads matching your filters" : "Export every lead"}
+                        >
+                            <Download className="size-4" aria-hidden="true" />
+                            Export
+                        </Button>
+                        <Button
+                            variant="primary"
+                            onClick={() => {
+                                setEditing(undefined);
+                                setFormOpen(true);
+                            }}
+                        >
+                            <Plus className="size-4" aria-hidden="true" />
+                            New lead
+                        </Button>
+                    </div>
                 }
             />
 
@@ -287,7 +477,80 @@ export function LeadsPage() {
                     </div>
 
                     {showFilters && (
-                        <div className="grid gap-3 pt-1 animate-slide-up sm:grid-cols-3">
+                        <div className="grid gap-3 pt-1 animate-slide-up sm:grid-cols-2 lg:grid-cols-5">
+                            <div>
+                                <label
+                                    htmlFor="filter-quality"
+                                    className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400"
+                                >
+                                    Quality
+                                </label>
+                                <Select
+                                    id="filter-quality"
+                                    value={quality}
+                                    onChange={(event) => updateParams({ quality: event.target.value })}
+                                >
+                                    <option value="all">Any quality</option>
+                                    {QUALITY_ORDER.map((option) => (
+                                        <option key={option} value={option}>
+                                            {QUALITY_STYLES[option].label}
+                                        </option>
+                                    ))}
+                                </Select>
+                            </div>
+
+                            <div>
+                                <label
+                                    htmlFor="filter-band"
+                                    className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400"
+                                >
+                                    Score
+                                </label>
+                                <Select
+                                    id="filter-band"
+                                    value={band}
+                                    onChange={(event) => updateParams({ band: event.target.value })}
+                                >
+                                    <option value="all">Any score</option>
+                                    {BAND_ORDER.map((option) => (
+                                        <option key={option} value={option}>
+                                            {BAND_STYLES[option].label}
+                                        </option>
+                                    ))}
+                                </Select>
+                            </div>
+
+                            {canAssign && (
+                            <div>
+                                <label
+                                    htmlFor="filter-owner"
+                                    className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400"
+                                >
+                                    Owner
+                                </label>
+                                <Select
+                                    id="filter-owner"
+                                    value={ownerFilter === undefined ? "all" : String(ownerFilter)}
+                                    onChange={(event) => updateParams({ owner: event.target.value })}
+                                >
+                                    <option value="all">Anyone</option>
+                                    <option value="none">No owner</option>
+                                    {(team.data ?? []).map((member) => (
+                                        <option key={member.id} value={member.id}>
+                                            {member.name}
+                                        </option>
+                                    ))}
+                                    {/* A link to someone not (or no longer) in the
+                                        team still shows what it is filtering by. */}
+                                    {typeof ownerFilter === "number" &&
+                                        team.data &&
+                                        !team.data.some((member) => member.id === ownerFilter) && (
+                                            <option value={ownerFilter}>Removed member</option>
+                                        )}
+                                </Select>
+                            </div>
+                            )}
+
                             <div>
                                 <label
                                     htmlFor="filter-source"
@@ -330,6 +593,7 @@ export function LeadsPage() {
                                     <option value="name">Name</option>
                                     <option value="company">Company</option>
                                     <option value="stage">Stage</option>
+                                    <option value="score">Score</option>
                                 </Select>
                             </div>
 
@@ -359,7 +623,7 @@ export function LeadsPage() {
                             type="button"
                             onClick={() => {
                                 setSearchInput("");
-                                updateParams({ search: null, stage: null, source: null });
+                                updateParams({ search: null, stage: null, source: null, owner: null, band: null, quality: null });
                             }}
                             className="inline-flex items-center gap-1 text-xs font-medium text-slate-500 transition-colors hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200"
                         >
@@ -370,9 +634,13 @@ export function LeadsPage() {
                 </div>
 
                 {/* --- Results --- */}
+                {error && data && (
+                    <RefreshError message={error.message} onRetry={refetch} className="mx-4 mt-3 sm:mx-5" />
+                )}
+
                 {loading ? (
                     <TableSkeleton />
-                ) : error ? (
+                ) : error && !data ? (
                     <div className="p-5">
                         <ErrorState message={error.message} onRetry={refetch} />
                     </div>
@@ -387,7 +655,7 @@ export function LeadsPage() {
                                     variant="secondary"
                                     onClick={() => {
                                         setSearchInput("");
-                                        updateParams({ search: null, stage: null, source: null });
+                                        updateParams({ search: null, stage: null, source: null, owner: null, band: null, quality: null });
                                     }}
                                 >
                                     Clear filters
@@ -432,6 +700,14 @@ export function LeadsPage() {
                             <table className="w-full text-left text-sm">
                                 <thead className="border-b border-slate-200 bg-slate-50/60 text-xs dark:border-slate-800 dark:bg-slate-950/40">
                                     <tr>
+                                        <th scope="col" className="w-10 py-2.5 pl-4">
+                                            <Checkbox
+                                                label={allOnPageSelected ? "Untick every lead on this page" : "Tick every lead on this page"}
+                                                checked={allOnPageSelected}
+                                                indeterminate={selectedLeads.length > 0 && !allOnPageSelected}
+                                                onChange={togglePage}
+                                            />
+                                        </th>
                                         <SortableHeader
                                             field="name"
                                             label="Lead"
@@ -457,6 +733,28 @@ export function LeadsPage() {
                                             onSort={toggleSort}
                                         />
                                         <th scope="col" className="px-4 py-2.5 font-medium text-slate-500 dark:text-slate-400">
+                                            Owner
+                                        </th>
+                                        <th scope="col" className="px-4 py-2.5 font-medium text-slate-500 dark:text-slate-400">
+                                            Health
+                                        </th>
+                                        <SortableHeader
+                                            field="score"
+                                            label="Score"
+                                            sortBy={sortBy}
+                                            sortDir={sortDir}
+                                            onSort={toggleSort}
+                                            align="right"
+                                            title="Lead score, 0-100: Hot 70+, Warm 40-69, Cold under 40. Open a lead to see how it is worked out."
+                                        />
+                                        <th
+                                            scope="col"
+                                            className="px-4 py-2.5 font-medium text-slate-500 dark:text-slate-400"
+                                            title="Lead quality (Good / Average / Poor) and the latest event sent to Meta"
+                                        >
+                                            Quality
+                                        </th>
+                                        <th scope="col" className="px-4 py-2.5 font-medium text-slate-500 dark:text-slate-400">
                                             Source
                                         </th>
                                         <SortableHeader
@@ -480,8 +778,18 @@ export function LeadsPage() {
                                         return (
                                             <tr
                                                 key={lead.id}
-                                                className="group transition-colors hover:bg-slate-50 dark:hover:bg-slate-800/40"
+                                                className={cx(
+                                                    "group transition-colors hover:bg-slate-50 dark:hover:bg-slate-800/40",
+                                                    selected.has(lead.id) && "bg-brand-50/60 dark:bg-brand-950/30",
+                                                )}
                                             >
+                                                <td className="w-10 py-3 pl-4">
+                                                    <Checkbox
+                                                        label={`Tick ${lead.name}`}
+                                                        checked={selected.has(lead.id)}
+                                                        onChange={() => toggleSelected(lead.id)}
+                                                    />
+                                                </td>
                                                 <td className="px-4 py-3">
                                                     <Link
                                                         to={`/leads/${lead.id}`}
@@ -545,6 +853,38 @@ export function LeadsPage() {
                                                 </td>
 
                                                 <td className="px-4 py-3">
+                                                    <OwnerCell name={memberName(team.data, lead.owner_id)} />
+                                                </td>
+
+                                                <td className="px-4 py-3">
+                                                    <div className="flex flex-wrap gap-1.5">
+                                                        <HealthBadge lead={lead} />
+                                                        <StuckBadge lead={lead} />
+                                                    </div>
+                                                </td>
+
+                                                <td className="px-4 py-3 text-right">
+                                                    <ScorePill score={lead.score} />
+                                                </td>
+
+                                                <td className="px-4 py-3">
+                                                    <div className="flex flex-col items-start gap-1">
+                                                        <QualityBadge
+                                                            quality={lead.quality}
+                                                            score={lead.quality_override ?? lead.quality_score}
+                                                            title={lead.quality_reason}
+                                                        />
+                                                        {lead.meta_capi_status && (
+                                                            <CapiStatusBadge
+                                                                status={lead.meta_capi_status}
+                                                                eventName={`Meta: ${lead.meta_last_event_name}`}
+                                                                at={lead.meta_last_event_at}
+                                                            />
+                                                        )}
+                                                    </div>
+                                                </td>
+
+                                                <td className="px-4 py-3">
                                                     <span className="inline-flex items-center gap-1.5 text-xs text-slate-600 dark:text-slate-300">
                                                         <SourceIcon className="size-3.5 opacity-60" aria-hidden="true" />
                                                         {sourceStyle.label}
@@ -575,13 +915,15 @@ export function LeadsPage() {
                                                         >
                                                             <Pencil className="size-4" aria-hidden="true" />
                                                         </IconButton>
-                                                        <IconButton
-                                                            label={`Delete ${lead.name}`}
-                                                            danger
-                                                            onClick={() => setDeleting(lead)}
-                                                        >
-                                                            <Trash2 className="size-4" aria-hidden="true" />
-                                                        </IconButton>
+                                                        {canAssign && (
+                                                            <IconButton
+                                                                label={`Delete ${lead.name}`}
+                                                                danger
+                                                                onClick={() => setDeleting(lead)}
+                                                            >
+                                                                <Trash2 className="size-4" aria-hidden="true" />
+                                                            </IconButton>
+                                                        )}
                                                         <Link
                                                             to={`/leads/${lead.id}`}
                                                             aria-label={`Open ${lead.name}`}
@@ -605,9 +947,30 @@ export function LeadsPage() {
                                 fetching && "opacity-60",
                             )}
                         >
+                            {leads.length > 0 && (
+                                <li className="flex items-center gap-3 px-4 py-2 text-xs text-slate-500 dark:text-slate-400">
+                                    <Checkbox
+                                        label={allOnPageSelected ? "Untick every lead on this page" : "Tick every lead on this page"}
+                                        checked={allOnPageSelected}
+                                        indeterminate={selectedLeads.length > 0 && !allOnPageSelected}
+                                        onChange={togglePage}
+                                    />
+                                    {selectedLeads.length > 0 ? `${selectedLeads.length} selected` : "Select all on this page"}
+                                </li>
+                            )}
                             {leads.map((lead) => (
-                                <li key={lead.id} className="px-4 py-3.5">
+                                <li
+                                    key={lead.id}
+                                    className={cx("px-4 py-3.5", selected.has(lead.id) && "bg-brand-50/60 dark:bg-brand-950/30")}
+                                >
                                     <div className="flex items-start gap-3">
+                                        <span className="pt-2">
+                                            <Checkbox
+                                                label={`Tick ${lead.name}`}
+                                                checked={selected.has(lead.id)}
+                                                onChange={() => toggleSelected(lead.id)}
+                                            />
+                                        </span>
                                         <span
                                             className={cx(
                                                 "flex size-9 shrink-0 items-center justify-center rounded-full text-xs font-semibold",
@@ -635,7 +998,15 @@ export function LeadsPage() {
                                                     busy={stageBusyId === lead.id}
                                                     onChange={(next) => handleStageChange(lead, next)}
                                                 />
+                                                <HealthBadge lead={lead} />
+                                                <StuckBadge lead={lead} />
+                                                {lead.score && (
+                                                    <span className="text-[11px] text-slate-400 dark:text-slate-500">
+                                                        Score <ScorePill score={lead.score} />
+                                                    </span>
+                                                )}
                                                 <span className="text-[11px] text-slate-400 dark:text-slate-500">
+                                                    {memberName(team.data, lead.owner_id) ?? "No owner"} ·{" "}
                                                     {SOURCE_STYLES[lead.source].label} ·{" "}
                                                     {formatRelative(lead.created_at)}
                                                 </span>
@@ -680,11 +1051,45 @@ export function LeadsPage() {
                 )}
             </Card>
 
+            {selectedLeads.length > 0 && (
+                <BulkActionBar
+                    count={selectedLeads.length}
+                    team={team.data ?? []}
+                    busy={bulkBusy}
+                    onOwner={canAssign ? bulkOwner : undefined}
+                    onStage={bulkStage}
+                    onSource={bulkSource}
+                    onExport={exportSelected}
+                    onDelete={canAssign ? () => setBulkDeleting(true) : undefined}
+                    onClear={() => setSelected(new Set())}
+                />
+            )}
+
+            <ConfirmDialog
+                open={bulkDeleting}
+                onClose={() => setBulkDeleting(false)}
+                onConfirm={bulkDelete}
+                title={`Delete ${leadsWord(selectedLeads.length)}`}
+                confirmLabel="Delete"
+                message={`Delete ${leadsWord(selectedLeads.length)}? Their entire activity history will be removed too. This cannot be undone.`}
+            />
+
+            {closeReason.dialog}
+
             <LeadFormModal
                 open={formOpen}
                 lead={editing}
                 onClose={() => setFormOpen(false)}
                 onSubmit={handleSubmit}
+            />
+
+            <ImportLeadsModal
+                open={importOpen}
+                onClose={() => setImportOpen(false)}
+                onImported={(count) => {
+                    toast.success(count === 1 ? "1 lead imported." : `${count} leads imported.`);
+                    refetch();
+                }}
             />
 
             <ConfirmDialog
@@ -752,19 +1157,24 @@ function SortableHeader({
     sortBy,
     sortDir,
     onSort,
+    align = "left",
+    title,
 }: {
     field: SortField;
     label: string;
     sortBy: SortField;
     sortDir: "asc" | "desc";
     onSort: (field: SortField) => void;
+    align?: "left" | "right";
+    title?: string;
 }) {
     const active = sortBy === field;
 
     return (
         <th
             scope="col"
-            className="px-4 py-2.5 font-medium"
+            className={cx("px-4 py-2.5 font-medium", align === "right" && "text-right")}
+            title={title}
             // aria-sort is what tells a screen reader the table is sorted, and how.
             aria-sort={active ? (sortDir === "asc" ? "ascending" : "descending") : "none"}
         >
@@ -790,6 +1200,27 @@ function SortableHeader({
                 )}
             </button>
         </th>
+    );
+}
+
+/** The owner's name with their initials, or a quiet "No owner". */
+function OwnerCell({ name }: { name: string | null }) {
+    if (!name) {
+        return <span className="text-xs whitespace-nowrap text-slate-400 dark:text-slate-500">No owner</span>;
+    }
+    return (
+        <span className="inline-flex items-center gap-1.5 text-xs whitespace-nowrap text-slate-600 dark:text-slate-300">
+            <span
+                className={cx(
+                    "flex size-5 shrink-0 items-center justify-center rounded-full text-[9px] font-semibold",
+                    avatarColor(name),
+                )}
+                aria-hidden="true"
+            >
+                {initials(name)}
+            </span>
+            <span className="max-w-[8rem] truncate">{name}</span>
+        </span>
     );
 }
 
@@ -837,5 +1268,34 @@ function TableSkeleton() {
                 </div>
             ))}
         </div>
+    );
+}
+
+/**
+ * A row's tick box. indeterminate (some but not all rows ticked) can only be
+ * set from script, hence the ref callback.
+ */
+function Checkbox({
+    label,
+    checked,
+    indeterminate = false,
+    onChange,
+}: {
+    label: string;
+    checked: boolean;
+    indeterminate?: boolean;
+    onChange: () => void;
+}) {
+    return (
+        <input
+            type="checkbox"
+            aria-label={label}
+            checked={checked}
+            ref={(el) => {
+                if (el) el.indeterminate = indeterminate;
+            }}
+            onChange={onChange}
+            className="size-4 cursor-pointer rounded border-slate-300 text-brand-600 focus:ring-brand-500 dark:border-slate-600"
+        />
     );
 }

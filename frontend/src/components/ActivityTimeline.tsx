@@ -1,8 +1,9 @@
 import { useState } from "react";
-import { History, Send } from "lucide-react";
+import { History, Pencil, Send, Trash2 } from "lucide-react";
 
-import { ACTIVITY_STYLES, cx, formatDateTime, formatRelative } from "../lib/display";
+import { ACTIVITY_STYLES, cx, formatDateTime, formatRelative, isEditableActivity } from "../lib/display";
 import type { Activity, ActivityInput, UserActivityType } from "../lib/types";
+import { ConfirmDialog } from "./ConfirmDialog";
 import { Button, EmptyState, Field, Select, Textarea } from "./ui";
 
 /**
@@ -12,8 +13,24 @@ import { Button, EmptyState, Field, Select, Textarea } from "./ui";
  * "Stage changed from Qualified to Proposal Sent" (written by the server) reads
  * alongside "Called about pricing" (written by a user), because what someone
  * needs when they open a lead is the single combined story of what happened.
+ *
+ * Notes, calls, emails and meetings can be corrected or removed when onEdit
+ * and onDelete are given. Entries the server wrote cannot.
  */
-export function ActivityTimeline({ activities }: { activities: Activity[] }) {
+export function ActivityTimeline({
+    activities,
+    onEdit,
+    onDelete,
+}: {
+    activities: Activity[];
+    /** Resolves once saved; rejects (with a message) to keep the editor open. */
+    onEdit?: (activity: Activity, note: string) => Promise<void>;
+    /** Resolves once deleted; rejects to keep the confirmation open. */
+    onDelete?: (activity: Activity) => Promise<void>;
+}) {
+    const [editingId, setEditingId] = useState<number | null>(null);
+    const [deleting, setDeleting] = useState<Activity | null>(null);
+
     if (activities.length === 0) {
         return (
             <EmptyState
@@ -25,14 +42,17 @@ export function ActivityTimeline({ activities }: { activities: Activity[] }) {
     }
 
     return (
+        <>
         <ol className="relative space-y-1 px-5 py-4" role="list">
             {activities.map((activity, index) => {
                 const style = ACTIVITY_STYLES[activity.type] ?? ACTIVITY_STYLES.note;
                 const Icon = style.icon;
                 const isLast = index === activities.length - 1;
+                const editable = isEditableActivity(activity.type) && Boolean(onEdit || onDelete);
+                const editing = editingId === activity.id;
 
                 return (
-                    <li key={activity.id} className="relative flex gap-3 pb-4">
+                    <li key={activity.id} className="group relative flex gap-3 pb-4">
                         {/* The connecting rail. Omitted on the last item so the
                             line stops at the final marker instead of dangling. */}
                         {!isLast && (
@@ -67,15 +87,158 @@ export function ActivityTimeline({ activities }: { activities: Activity[] }) {
                                 >
                                     {formatRelative(activity.created_at)}
                                 </time>
+                                {activity.edited_at && (
+                                    <span
+                                        className="text-xs text-slate-400 italic dark:text-slate-500"
+                                        title={`Edited ${formatDateTime(activity.edited_at)}`}
+                                    >
+                                        edited
+                                    </span>
+                                )}
+
+                                {/* Faded in on hover to keep the timeline calm;
+                                    focus-within keeps them reachable by keyboard,
+                                    and on phones they always show. */}
+                                {editable && !editing && (
+                                    <span className="ml-auto flex gap-0.5 self-center transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:focus-within:opacity-100">
+                                        {onEdit && (
+                                            <button
+                                                type="button"
+                                                onClick={() => setEditingId(activity.id)}
+                                                aria-label={`Edit this ${style.label.toLowerCase()}`}
+                                                title="Edit"
+                                                className="rounded-md p-1 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-800 dark:hover:text-slate-200"
+                                            >
+                                                <Pencil className="size-3.5" aria-hidden="true" />
+                                            </button>
+                                        )}
+                                        {onDelete && (
+                                            <button
+                                                type="button"
+                                                onClick={() => setDeleting(activity)}
+                                                aria-label={`Delete this ${style.label.toLowerCase()}`}
+                                                title="Delete"
+                                                className="rounded-md p-1 text-slate-400 transition-colors hover:bg-rose-50 hover:text-rose-600 dark:hover:bg-rose-950/60 dark:hover:text-rose-400"
+                                            >
+                                                <Trash2 className="size-3.5" aria-hidden="true" />
+                                            </button>
+                                        )}
+                                    </span>
+                                )}
                             </div>
-                            <p className="mt-0.5 text-sm break-words text-slate-600 dark:text-slate-300">
-                                {activity.note}
-                            </p>
+
+                            {editing && onEdit ? (
+                                <EntryEditor
+                                    activity={activity}
+                                    onCancel={() => setEditingId(null)}
+                                    onSave={async (note) => {
+                                        await onEdit(activity, note);
+                                        setEditingId(null);
+                                    }}
+                                />
+                            ) : (
+                                <p className="mt-0.5 text-sm break-words whitespace-pre-wrap text-slate-600 dark:text-slate-300">
+                                    {activity.note}
+                                </p>
+                            )}
                         </div>
                     </li>
                 );
             })}
         </ol>
+
+        {onDelete && (
+            <ConfirmDialog
+                open={deleting !== null}
+                onClose={() => setDeleting(null)}
+                onConfirm={async () => {
+                    if (deleting) await onDelete(deleting);
+                }}
+                title="Delete entry"
+                message={
+                    deleting
+                        ? `Delete this ${ACTIVITY_STYLES[deleting.type].label.toLowerCase()} from the timeline? This cannot be undone.`
+                        : ""
+                }
+            />
+        )}
+        </>
+    );
+}
+
+/** Edits one entry's text in place. Esc cancels, Ctrl+Enter saves. */
+function EntryEditor({
+    activity,
+    onCancel,
+    onSave,
+}: {
+    activity: Activity;
+    onCancel: () => void;
+    /** Rejects with a message to keep the editor open. */
+    onSave: (note: string) => Promise<void>;
+}) {
+    const [note, setNote] = useState(activity.note);
+    const [saving, setSaving] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+
+    const trimmed = note.trim();
+    const id = `edit-activity-${activity.id}`;
+
+    const save = async () => {
+        if (!trimmed || saving) return;
+        // Nothing changed: just close, rather than mark it "edited".
+        if (trimmed === activity.note) {
+            onCancel();
+            return;
+        }
+        setSaving(true);
+        setError(null);
+        try {
+            await onSave(trimmed);
+        } catch (cause) {
+            setError(cause instanceof Error ? cause.message : "Could not save the change.");
+            setSaving(false);
+        }
+    };
+
+    return (
+        <div className="mt-1.5 space-y-2">
+            <Textarea
+                id={id}
+                rows={3}
+                value={note}
+                maxLength={2000}
+                autoFocus
+                invalid={Boolean(error)}
+                aria-label="Edit entry"
+                onChange={(event) => setNote(event.target.value)}
+                onKeyDown={(event) => {
+                    if (event.key === "Escape") {
+                        event.preventDefault();
+                        onCancel();
+                    } else if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+                        event.preventDefault();
+                        void save();
+                    }
+                }}
+            />
+            {error && (
+                <p id={`${id}-error`} className="text-xs text-rose-600 dark:text-rose-400">
+                    {error}
+                </p>
+            )}
+            <div className="flex items-center justify-end gap-2">
+                <span className="mr-auto text-xs text-slate-400 dark:text-slate-500">
+                    {note.length} / 2000 · Ctrl+Enter to save, Esc to cancel
+                </span>
+                <Button size="sm" variant="ghost" onClick={onCancel} disabled={saving}>
+                    Cancel
+                </Button>
+                <Button size="sm" variant="primary" loading={saving} disabled={!trimmed} onClick={() => void save()}>
+                    Save
+                </Button>
+            </div>
+        </div>
     );
 }
 

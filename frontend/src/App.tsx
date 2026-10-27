@@ -1,10 +1,24 @@
-import { Link, Route, Routes } from "react-router-dom";
+import { Link, Route, Routes, useParams } from "react-router-dom";
 import { Compass } from "lucide-react";
 
 import { AppShell } from "./components/AppShell";
+import { AccountPage } from "./pages/AccountPage";
+import { AutomationsPage } from "./pages/AutomationsPage";
 import { DashboardPage } from "./pages/DashboardPage";
+import { DealsPage } from "./pages/DealsPage";
+import { FollowUpsPage } from "./pages/FollowUpsPage";
+import { IntegrationsPage } from "./pages/IntegrationsPage";
 import { LeadDetailPage } from "./pages/LeadDetailPage";
 import { LeadsPage } from "./pages/LeadsPage";
+import { MetaCapiPage } from "./pages/MetaCapiPage";
+import { MetaLeadsPage } from "./pages/MetaLeadsPage";
+import { PipelinePage } from "./pages/PipelinePage";
+import { ReportsPage } from "./pages/ReportsPage";
+import { SalesIntelligencePage } from "./pages/SalesIntelligencePage";
+import { SchedulePage } from "./pages/SchedulePage";
+import { TasksPage } from "./pages/TasksPage";
+import { TeamPage } from "./pages/TeamPage";
+import { TemplatesPage } from "./pages/TemplatesPage";
 import { Card, EmptyState } from "./components/ui";
 
 /**
@@ -20,8 +34,22 @@ export default function App() {
             <Route element={<AppShell />}>
                 {/* index = the parent path exactly, i.e. "/" */}
                 <Route index element={<DashboardPage />} />
+                <Route path="/follow-ups" element={<FollowUpsPage />} />
                 <Route path="/leads" element={<LeadsPage />} />
-                <Route path="/leads/:id" element={<LeadDetailPage />} />
+                <Route path="/leads/:id" element={<LeadDetailRoute />} />
+                <Route path="/deals" element={<DealsPage />} />
+                <Route path="/pipeline" element={<PipelinePage />} />
+                <Route path="/sales-intelligence" element={<SalesIntelligencePage />} />
+                <Route path="/tasks" element={<TasksPage />} />
+                <Route path="/schedule" element={<SchedulePage />} />
+                <Route path="/reports" element={<ReportsPage />} />
+                <Route path="/templates" element={<TemplatesPage />} />
+                <Route path="/automations" element={<AutomationsPage />} />
+                <Route path="/integrations" element={<IntegrationsPage />} />
+                <Route path="/integrations/meta-capi" element={<MetaCapiPage />} />
+                <Route path="/meta-leads" element={<MetaLeadsPage />} />
+                <Route path="/team" element={<TeamPage />} />
+                <Route path="/account" element={<AccountPage />} />
 
                 {/* "*" catches anything unmatched. Without it, a typo'd URL
                     renders the shell around a blank page, which looks like a bug. */}
@@ -29,6 +57,15 @@ export default function App() {
             </Route>
         </Routes>
     );
+}
+
+/**
+ * Keys the detail page by its id, so going from one lead straight to another
+ * mounts a fresh page instead of showing the old lead until the new one loads.
+ */
+function LeadDetailRoute() {
+    const { id } = useParams<{ id: string }>();
+    return <LeadDetailPage key={id} />;
 }
 
 function NotFoundPage() {

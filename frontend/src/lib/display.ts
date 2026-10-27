@@ -10,25 +10,53 @@
 import {
     ArrowRightLeft,
     CalendarDays,
+    CalendarX,
     CircleDashed,
+    CalendarCheck,
+    Gauge,
+    Star,
     Globe,
+    CircleCheck,
     Handshake,
+    ListTodo,
     Mail,
+    Megaphone,
     MessageSquare,
     Network,
     Phone,
     PhoneCall,
+    Presentation,
+    Repeat,
+    Search,
     Send,
     Sparkles,
     Target,
     ThumbsDown,
     Trophy,
+    UserCog,
     UserPlus,
     Users,
+    Zap,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
-import type { ActivityType, Source, Stage } from "./types";
+import type {
+    ActivityType,
+    CapiHealth,
+    CapiStatus,
+    Health,
+    QualificationStatus,
+    Quality,
+    QualityCategory,
+    ScoreBand,
+    ScoreFactor,
+    ScorePenalty,
+    Source,
+    Stage,
+    StageHistoryEntry,
+    TaskStatus,
+    TaskType,
+} from "./types";
 
 // ---------------------------------------------------------------------------
 // Stages
@@ -174,6 +202,9 @@ export const SOURCE_STYLES: Record<Source, { label: string; icon: LucideIcon }> 
     // "professional network" glyph rather than a pinned-version workaround.
     linkedin: { label: "LinkedIn", icon: Network },
     cold_call: { label: "Cold Call", icon: Phone },
+    // Generic glyphs again: no brand icons in lucide.
+    meta_ads: { label: "Meta Ads", icon: Megaphone },
+    google_ads: { label: "Google Ads", icon: Search },
     other: { label: "Other", icon: CircleDashed },
 };
 
@@ -221,7 +252,106 @@ export const ACTIVITY_STYLES: Record<ActivityType, ActivityStyle> = {
         marker:
             "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300",
     },
+    task_completed: {
+        label: "Task completed",
+        icon: CircleCheck,
+        marker: "bg-teal-100 text-teal-700 dark:bg-teal-950 dark:text-teal-300",
+    },
+    task_cancelled: {
+        label: "Event cancelled",
+        icon: CalendarX,
+        marker: "bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300",
+    },
+    owner_change: {
+        label: "Owner change",
+        icon: UserCog,
+        marker: "bg-indigo-100 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300",
+    },
+    automation: {
+        label: "Automation",
+        icon: Zap,
+        marker: "bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300",
+    },
+    ad_form: {
+        label: "Ad form",
+        icon: Megaphone,
+        marker: "bg-fuchsia-100 text-fuchsia-700 dark:bg-fuchsia-950 dark:text-fuchsia-300",
+    },
+    quality_change: {
+        label: "Quality",
+        icon: Gauge,
+        marker: "bg-lime-100 text-lime-700 dark:bg-lime-950 dark:text-lime-300",
+    },
+    booking: {
+        label: "Meeting booked",
+        icon: CalendarCheck,
+        marker: "bg-cyan-100 text-cyan-700 dark:bg-cyan-950 dark:text-cyan-300",
+    },
+    feedback: {
+        label: "Feedback",
+        icon: Star,
+        marker: "bg-yellow-100 text-yellow-700 dark:bg-yellow-950 dark:text-yellow-300",
+    },
 };
+
+/**
+ * Whether a timeline entry may be edited or deleted: only the kinds a user
+ * logs. Entries the server wrote are a record of what happened. Mirrors
+ * model.UserActivityTypes.
+ */
+export function isEditableActivity(type: ActivityType): boolean {
+    return type === "note" || type === "call" || type === "email" || type === "meeting";
+}
+
+// ---------------------------------------------------------------------------
+// Task types
+// ---------------------------------------------------------------------------
+
+/** Every task type, in the order the picker shows them. */
+export const TASK_TYPES: TaskType[] = ["todo", "call", "email", "meeting", "demo", "follow_up"];
+
+/**
+ * Calls, emails and meetings borrow the timeline's icons, so a planned call and
+ * the call it becomes once done look the same.
+ */
+export const TASK_TYPE_STYLES: Record<TaskType, { label: string; icon: LucideIcon }> = {
+    todo: { label: "To-do", icon: ListTodo },
+    call: { label: "Call", icon: ACTIVITY_STYLES.call.icon },
+    email: { label: "Email", icon: ACTIVITY_STYLES.email.icon },
+    meeting: { label: "Meeting", icon: ACTIVITY_STYLES.meeting.icon },
+    demo: { label: "Demo", icon: Presentation },
+    follow_up: { label: "Follow-up", icon: Repeat },
+};
+
+/** Badges for an event's status. Upcoming is the normal case and gets none. */
+export const TASK_STATUS_STYLES: Record<TaskStatus, { label: string; badge: string }> = {
+    upcoming: {
+        label: "Upcoming",
+        badge: "bg-sky-50 text-sky-700 ring-sky-200 dark:bg-sky-950 dark:text-sky-300 dark:ring-sky-800",
+    },
+    overdue: {
+        label: "Overdue",
+        badge: "bg-rose-50 text-rose-700 ring-rose-200 dark:bg-rose-950 dark:text-rose-300 dark:ring-rose-800",
+    },
+    completed: {
+        label: "Completed",
+        badge: "bg-teal-50 text-teal-700 ring-teal-200 dark:bg-teal-950 dark:text-teal-300 dark:ring-teal-800",
+    },
+    cancelled: {
+        label: "Cancelled",
+        badge: "bg-slate-100 text-slate-600 ring-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:ring-slate-700",
+    },
+};
+
+/** Reminder lead times offered, in minutes. Matches model.ReminderOptions. */
+export const REMINDER_OPTIONS = [5, 15, 30, 1440] as const;
+
+/** "15 min before", "1 day before". */
+export function formatReminder(minutes: number): string {
+    if (minutes === 1440) return "1 day before";
+    if (minutes % 60 === 0) return `${minutes / 60} h before`;
+    return `${minutes} min before`;
+}
 
 // ---------------------------------------------------------------------------
 // Formatting
@@ -313,7 +443,295 @@ export function avatarColor(name: string): string {
     return palette[Math.abs(hash) % palette.length];
 }
 
+// ---------------------------------------------------------------------------
+// Lead health and score
+// ---------------------------------------------------------------------------
+
+export const HEALTH_STYLES: Record<Health, { label: string; dot: string; badge: string }> = {
+    active: {
+        label: "Active",
+        dot: "bg-emerald-500",
+        badge: "bg-emerald-50 text-emerald-700 ring-emerald-200 dark:bg-emerald-950 dark:text-emerald-300 dark:ring-emerald-800",
+    },
+    cooling: {
+        label: "Cooling",
+        dot: "bg-amber-500",
+        badge: "bg-amber-50 text-amber-700 ring-amber-200 dark:bg-amber-950 dark:text-amber-300 dark:ring-amber-800",
+    },
+    cold: {
+        label: "Cold",
+        dot: "bg-sky-500",
+        badge: "bg-sky-50 text-sky-700 ring-sky-200 dark:bg-sky-950 dark:text-sky-300 dark:ring-sky-800",
+    },
+    closed: {
+        label: "Closed",
+        dot: "bg-slate-300 dark:bg-slate-600",
+        badge: "bg-slate-100 text-slate-500 ring-slate-200 dark:bg-slate-800 dark:text-slate-400 dark:ring-slate-700",
+    },
+};
+
+/** "Touched today", "1 day since contact", "9 days since contact". */
+export function formatSilence(days: number): string {
+    if (days === 0) return "Touched today";
+    return `${days} ${days === 1 ? "day" : "days"} since contact`;
+}
+
+/**
+ * Score bands, hottest first. The cut-offs live on the server (model.BandFor);
+ * scoreBand repeats them only to colour a bare number.
+ */
+export const BAND_ORDER: ScoreBand[] = ["hot", "warm", "cold"];
+
+export const BAND_STYLES: Record<ScoreBand, { label: string; tone: string; badge: string }> = {
+    hot: {
+        label: "Hot",
+        tone: "text-orange-600 dark:text-orange-400",
+        badge: "bg-orange-50 text-orange-700 ring-orange-200 dark:bg-orange-950 dark:text-orange-300 dark:ring-orange-800",
+    },
+    warm: {
+        label: "Warm",
+        tone: "text-amber-600 dark:text-amber-400",
+        badge: "bg-amber-50 text-amber-700 ring-amber-200 dark:bg-amber-950 dark:text-amber-300 dark:ring-amber-800",
+    },
+    cold: {
+        label: "Cold",
+        tone: "text-slate-500 dark:text-slate-400",
+        badge: "bg-slate-100 text-slate-600 ring-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:ring-slate-700",
+    },
+};
+
+export function scoreBand(total: number): ScoreBand {
+    if (total >= 70) return "hot";
+    if (total >= 40) return "warm";
+    return "cold";
+}
+
+/** Colour for a 0-100 score: the same three bands everywhere it appears. */
+export function scoreTone(total: number): string {
+    return BAND_STYLES[scoreBand(total)].tone;
+}
+
+/**
+ * What to do to earn a factor's missing points.
+ *
+ * This is what turns the score from a grade into a to-do list: every gap comes
+ * with the action that closes it.
+ */
+export const SCORE_TIPS: Record<ScoreFactor["key"], string> = {
+    stage: "Move the lead forward in the pipeline.",
+    recent_contact: "Log a call, email, meeting or note.",
+    engagement: "Book a call or meeting. Four conversations in 30 days earns full points.",
+    source: "Referrals score highest. Ask happy customers to introduce you.",
+    next_step: "Add a follow-up task.",
+    deal_value: "Estimate the deal value.",
+    phone: "Add a phone number.",
+    notes: "Write a few lines of context in Notes.",
+};
+
+/** How to clear each penalty and get its points back. */
+export const PENALTY_TIPS: Record<ScorePenalty["key"], string> = {
+    overdue_tasks: "Complete, reschedule or cancel the overdue tasks.",
+    stuck: "Move the deal to its next stage, or mark it lost.",
+};
+
+// ---------------------------------------------------------------------------
+// Money and due dates
+// ---------------------------------------------------------------------------
+
+const RUPEES = new Intl.NumberFormat("en-IN", {
+    style: "currency",
+    currency: "INR",
+    maximumFractionDigits: 0,
+});
+
+const RUPEES_COMPACT = new Intl.NumberFormat("en-IN", {
+    style: "currency",
+    currency: "INR",
+    notation: "compact",
+    maximumFractionDigits: 1,
+});
+
+/** e.g. "₹2,50,000" -- Indian digit grouping, whole rupees. */
+export function formatMoney(value: number): string {
+    return RUPEES.format(value);
+}
+
+/** e.g. "₹2.5L", "₹1.2Cr" -- for stat cards where space is tight. */
+export function formatMoneyCompact(value: number): string {
+    return RUPEES_COMPACT.format(value);
+}
+
+/**
+ * Today's date as "YYYY-MM-DD" in the viewer's own time zone.
+ *
+ * Built by hand because toISOString() is UTC: just after midnight in India it
+ * would still say yesterday.
+ */
+export function todayISODate(): string {
+    const now = new Date();
+    const month = String(now.getMonth() + 1).padStart(2, "0");
+    const day = String(now.getDate()).padStart(2, "0");
+    return `${now.getFullYear()}-${month}-${day}`;
+}
+
+/** Slot lengths offered when scheduling a task, in minutes. */
+export const TASK_DURATIONS = [15, 30, 45, 60, 90, 120, 180, 240];
+
+/** Matches model.DefaultTaskDuration on the server. */
+export const DEFAULT_TASK_DURATION = 30;
+
+/** Minutes since midnight for an "HH:MM" time. */
+export function minutesOfDay(time: string): number {
+    const [hours, minutes] = time.split(":").map(Number);
+    return hours * 60 + minutes;
+}
+
+/** "HH:MM" for a number of minutes since midnight, wrapping past 24:00. */
+export function timeFromMinutes(total: number): string {
+    const wrapped = ((total % 1440) + 1440) % 1440;
+    const hours = String(Math.floor(wrapped / 60)).padStart(2, "0");
+    const minutes = String(wrapped % 60).padStart(2, "0");
+    return `${hours}:${minutes}`;
+}
+
+/** "14:30" as the viewer's locale writes it, e.g. "2:30 PM". */
+export function formatClock(time: string): string {
+    const [hours, minutes] = time.split(":").map(Number);
+    return new Date(2000, 0, 1, hours, minutes).toLocaleTimeString(undefined, {
+        hour: "numeric",
+        minute: "2-digit",
+    });
+}
+
+/** "2:30 PM – 3:00 PM" for a timed task, null for an all-day one. */
+export function formatTimeSlot(task: { start_time: string | null; duration_minutes: number | null }): string | null {
+    if (!task.start_time) return null;
+    const end = timeFromMinutes(minutesOfDay(task.start_time) + (task.duration_minutes ?? DEFAULT_TASK_DURATION));
+    return `${formatClock(task.start_time)} – ${formatClock(end)}`;
+}
+
+/** "30 min", "1 hr", "1 hr 30 min". */
+export function formatDuration(minutes: number): string {
+    const hours = Math.floor(minutes / 60);
+    const rest = minutes % 60;
+    if (hours === 0) return `${rest} min`;
+    return rest === 0 ? `${hours} hr` : `${hours} hr ${rest} min`;
+}
+
+/** A "YYYY-MM-DD" date moved by whole days, without time zones getting involved. */
+export function addDaysISO(isoDate: string, days: number): string {
+    const [year, month, day] = isoDate.split("-").map(Number);
+    const moved = new Date(Date.UTC(year, month - 1, day + days));
+    return moved.toISOString().slice(0, 10);
+}
+
+/** Whole days from today to a "YYYY-MM-DD" date: negative means overdue. */
+export function daysUntil(isoDate: string): number {
+    const [year, month, day] = isoDate.split("-").map(Number);
+    const [ty, tm, td] = todayISODate().split("-").map(Number);
+    // Both sides as UTC midnights, so a daylight-saving shift cannot turn a
+    // whole day into 23 or 25 hours.
+    return Math.round((Date.UTC(year, month - 1, day) - Date.UTC(ty, tm - 1, td)) / 86_400_000);
+}
+
+/** "Overdue by 2 days", "Due today", "Due tomorrow", "Due in 5 days". */
+export function formatDue(isoDate: string): string {
+    const days = daysUntil(isoDate);
+    if (days < -1) return `Overdue by ${-days} days`;
+    if (days === -1) return "Overdue by 1 day";
+    if (days === 0) return "Due today";
+    if (days === 1) return "Due tomorrow";
+    if (days < 7) return `Due in ${days} days`;
+
+    // Parsed as a local date: new Date("YYYY-MM-DD") is UTC midnight, which
+    // displays as the previous day anywhere west of Greenwich.
+    const [year, month, day] = isoDate.split("-").map(Number);
+    return `Due ${new Date(year, month - 1, day).toLocaleDateString(undefined, {
+        day: "numeric",
+        month: "short",
+    })}`;
+}
+
+/** A length of time in the largest unit that reads naturally: "3 days", "5 hours". */
+export function formatSpan(ms: number): string {
+    const minutes = Math.floor(ms / 60_000);
+    if (minutes < 1) return "under a minute";
+    if (minutes < 60) return minutes === 1 ? "1 minute" : `${minutes} minutes`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return hours === 1 ? "1 hour" : `${hours} hours`;
+    const days = Math.floor(hours / 24);
+    return days === 1 ? "1 day" : `${days} days`;
+}
+
+/**
+ * The open stage a closed lead was in just before it was won or lost, or null
+ * when its history does not say (e.g. it was created straight into Lost).
+ */
+export function stageBeforeClosing(history: StageHistoryEntry[] | undefined): Stage | null {
+    const last = history?.[history.length - 1];
+    if (!last || !isClosedStage(last.to_stage)) return null;
+    return last.from_stage && !isClosedStage(last.from_stage) ? last.from_stage : null;
+}
+
 /** Joins conditional class names, dropping anything falsy. */
 export function cx(...classes: (string | false | null | undefined)[]): string {
     return classes.filter(Boolean).join(" ");
 }
+
+// ---------------------------------------------------------------------------
+// Lead quality and Meta Conversions API
+// ---------------------------------------------------------------------------
+
+const TONE = {
+    green: "bg-emerald-50 text-emerald-700 ring-emerald-200 dark:bg-emerald-950 dark:text-emerald-300 dark:ring-emerald-800",
+    amber: "bg-amber-50 text-amber-700 ring-amber-200 dark:bg-amber-950/60 dark:text-amber-300 dark:ring-amber-800",
+    red: "bg-rose-50 text-rose-700 ring-rose-200 dark:bg-rose-950 dark:text-rose-300 dark:ring-rose-800",
+    sky: "bg-sky-50 text-sky-700 ring-sky-200 dark:bg-sky-950 dark:text-sky-300 dark:ring-sky-800",
+    grey: "bg-slate-100 text-slate-600 ring-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:ring-slate-700",
+};
+
+export const QUALITY_ORDER: Quality[] = ["good", "average", "poor", "not_evaluated"];
+
+export const QUALITY_STYLES: Record<Quality, { label: string; badge: string }> = {
+    good: { label: "Good", badge: TONE.green },
+    average: { label: "Average", badge: TONE.amber },
+    poor: { label: "Poor", badge: TONE.red },
+    not_evaluated: { label: "Not evaluated", badge: TONE.grey },
+};
+
+export const QUALIFICATION_STYLES: Record<QualificationStatus, { label: string; badge: string }> = {
+    pending: { label: "Pending", badge: TONE.grey },
+    qualified: { label: "Qualified", badge: TONE.green },
+    not_qualified: { label: "Not qualified", badge: TONE.red },
+};
+
+export const QUALITY_CATEGORY_LABELS: Record<QualityCategory, string> = {
+    contact_validity: "Contact details",
+    service_fit: "Service fit",
+    budget_fit: "Budget fit",
+    follow_up_response: "Follow-up response",
+    meeting_attendance: "Meeting attendance",
+    other: "Other",
+};
+
+export const CAPI_STATUS_ORDER: CapiStatus[] = ["pending", "retry_scheduled", "sent", "failed", "cancelled"];
+
+/** One conversion event's delivery. */
+export const CAPI_STATUS_STYLES: Record<CapiStatus, { label: string; badge: string }> = {
+    pending: { label: "Pending", badge: TONE.sky },
+    retry_scheduled: { label: "Retry scheduled", badge: TONE.amber },
+    sent: { label: "Sent", badge: TONE.green },
+    failed: { label: "Failed", badge: TONE.red },
+    cancelled: { label: "Not sent", badge: TONE.grey },
+};
+
+/** The Conversions API integration as a whole. */
+export const CAPI_HEALTH_STYLES: Record<CapiHealth, { label: string; badge: string; dot: string }> = {
+    connected: { label: "Connected", badge: TONE.green, dot: "bg-emerald-500" },
+    invalid_credentials: { label: "Invalid credentials", badge: TONE.red, dot: "bg-rose-500" },
+    permission_denied: { label: "Permission denied", badge: TONE.red, dot: "bg-rose-500" },
+    temporarily_unavailable: { label: "Temporarily unavailable", badge: TONE.amber, dot: "bg-amber-500" },
+    not_configured: { label: "Not configured", badge: TONE.grey, dot: "bg-slate-400" },
+    disabled: { label: "Disabled", badge: TONE.grey, dot: "bg-slate-400" },
+    untested: { label: "Not tested yet", badge: TONE.sky, dot: "bg-sky-500" },
+};

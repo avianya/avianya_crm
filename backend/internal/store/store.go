@@ -20,6 +20,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"crm-lead-management/backend/internal/secrets"
 )
 
 // Sentinel errors. The API layer compares against these with errors.Is to pick
@@ -31,13 +33,45 @@ var (
 
 	// ErrDuplicateEmail means another lead already uses that email. -> 409
 	ErrDuplicateEmail = errors.New("store: a lead with this email already exists")
+
+	// ErrDuplicateMemberEmail means another team member has that email. -> 409
+	ErrDuplicateMemberEmail = errors.New("store: a team member with this email already exists")
+
+	// ErrTaskCompleted means a completed event was asked to be cancelled. -> 409
+	ErrTaskCompleted = errors.New("store: the event is already completed")
+
+	// ErrActivityLocked means a server-written timeline entry (a stage or
+	// owner change, a task update) was asked to be edited or deleted. -> 409
+	ErrActivityLocked = errors.New("store: system timeline entries cannot be changed")
 )
+
+// FieldError is a problem with one input field that only the database could
+// spot, such as a team member id that does not exist. -> 422 on that field.
+type FieldError struct {
+	Field   string
+	Message string
+}
+
+func (e *FieldError) Error() string { return "store: " + e.Field + ": " + e.Message }
+
+// unknownMember is the FieldError for a team member id that does not exist.
+func unknownMember(field string) error {
+	return &FieldError{Field: field, Message: "is not a team member (they may have been removed)"}
+}
 
 // Store owns the database connection pool and exposes one method per data
 // operation the API needs.
 type Store struct {
 	pool *pgxpool.Pool
+
+	// box seals the integration credentials; nil until SetSecretsBox, and
+	// then saving a credential fails with ErrNoEncryptionKey.
+	box *secrets.Box
 }
+
+// SetSecretsBox gives the store the key it seals credentials with. Called
+// once at startup, before the store is used.
+func (s *Store) SetSecretsBox(box *secrets.Box) { s.box = box }
 
 // New parses the connection string, configures a pool and verifies the database
 // is actually reachable before returning.
@@ -45,7 +79,10 @@ type Store struct {
 // Connecting eagerly at startup is a deliberate choice: it is far better to
 // crash on boot with "cannot reach database" than to start up looking healthy
 // and fail on the first user request.
-func New(ctx context.Context, databaseURL string) (*Store, error) {
+//
+// timezone, when not empty, is set on every connection so that CURRENT_DATE
+// and now() agree with the users' calendar rather than the server's.
+func New(ctx context.Context, databaseURL, timezone string) (*Store, error) {
 	cfg, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
 		// %w wraps the original error so callers can still inspect it with
@@ -62,6 +99,10 @@ func New(ctx context.Context, databaseURL string) (*Store, error) {
 	cfg.MaxConnIdleTime = 30 * time.Minute
 	cfg.HealthCheckPeriod = time.Minute
 	cfg.ConnConfig.ConnectTimeout = 5 * time.Second
+	if timezone != "" {
+		// Sent in the startup packet; an unknown zone fails the ping below.
+		cfg.ConnConfig.RuntimeParams["timezone"] = timezone
+	}
 
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
@@ -112,6 +153,16 @@ func isForeignKeyViolation(err error) bool {
 		return false
 	}
 	return pgErr.Code == "23503"
+}
+
+// isForeignKeyViolationOn is isForeignKeyViolation for one named constraint,
+// for tables with more than one foreign key.
+func isForeignKeyViolationOn(err error, constraintName string) bool {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		return false
+	}
+	return pgErr.Code == "23503" && pgErr.ConstraintName == constraintName
 }
 
 // ---------------------------------------------------------------------------

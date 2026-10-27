@@ -40,6 +40,7 @@
     --animate-scale-in: scale-in 0.18s cubic-bezier(0.16, 1, 0.3, 1);
     --animate-slide-up: slide-up 0.25s cubic-bezier(0.16, 1, 0.3, 1);
     --animate-slide-in-right: slide-in-right 0.24s cubic-bezier(0.16, 1, 0.3, 1);
+    --animate-card-in: card-in 0.55s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
 @keyframes fade-in {
@@ -73,6 +74,18 @@
     }
 }
 
+/* Integration cards arriving, one after another. */
+@keyframes card-in {
+    from {
+        opacity: 0;
+        transform: translateY(18px) scale(0.97);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+    }
+}
+
 @keyframes slide-in-right {
     from {
         opacity: 0;
@@ -94,10 +107,13 @@
        against a dark page. */
     :root {
         color-scheme: light;
+        /* Hour lines in the schedule's time grid (slate-100 / slate-800). */
+        --grid-line: var(--color-slate-100);
     }
 
     .dark {
         color-scheme: dark;
+        --grid-line: var(--color-slate-800);
     }
 
     html {

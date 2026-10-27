@@ -28,6 +28,8 @@ No authentication — the app opens straight to the dashboard and all data is sh
 - [Design decisions](#design-decisions)
 - [Assumptions](#assumptions)
 - [What I would do with more time](#what-i-would-do-with-more-time)
+- [Meta Conversions API and lead quality](docs/META_CAPI.md) (separate page)
+- [Logins, roles and lead visibility](docs/AUTH.md) (separate page)
 
 ---
 

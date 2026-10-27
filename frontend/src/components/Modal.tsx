@@ -165,3 +165,26 @@ export function Modal({
         document.body,
     );
 }
+
+/**
+ * The padded content area of a dialog. Modal itself adds no padding, so a
+ * form can put a full-width footer under its fields; every form uses this and
+ * ModalFooter so they all line up.
+ */
+export function ModalBody({ className, children }: { className?: string; children: React.ReactNode }) {
+    return <div className={cx("space-y-4 px-5 py-5", className)}>{children}</div>;
+}
+
+/** The dialog's button bar: full width, grey, buttons on the right. */
+export function ModalFooter({ className, children }: { className?: string; children: React.ReactNode }) {
+    return (
+        <div
+            className={cx(
+                "flex flex-wrap items-center justify-end gap-2 border-t border-slate-200 bg-slate-50 px-5 py-3.5 dark:border-slate-800 dark:bg-slate-950/50",
+                className,
+            )}
+        >
+            {children}
+        </div>
+    );
+}

@@ -81,6 +81,52 @@ func parseLeadQuery(c *gin.Context) (model.LeadQuery, model.ValidationErrors) {
 		}
 	}
 
+	if raw := strings.ToLower(strings.TrimSpace(c.Query("status"))); raw != "" && raw != "all" {
+		if !model.LeadStatuses[raw] {
+			errs["status"] = `must be "open" or "closed"`
+		} else {
+			q.Status = raw
+		}
+	}
+
+	if owner, ok := parseOwnerParam(c); ok {
+		q.OwnerID, q.Unowned = owner.OwnerID, owner.Unowned
+	} else {
+		errs["owner"] = ownerParamError
+	}
+
+	if raw := strings.ToLower(strings.TrimSpace(c.Query("quality"))); raw != "" && raw != "all" {
+		if quality := model.Quality(raw); quality.Valid() {
+			q.Quality = quality
+		} else {
+			errs["quality"] = "must be good, average, poor or not_evaluated"
+		}
+	}
+
+	if raw := strings.ToLower(strings.TrimSpace(c.Query("band"))); raw != "" && raw != "all" {
+		band := model.ScoreBand(raw)
+		if !band.IsValid() {
+			errs["band"] = `must be "hot", "warm" or "cold"`
+		} else {
+			q.Band = band
+		}
+	}
+
+	// ids narrows to the listed leads, for exporting the ones ticked on the list.
+	if raw := strings.TrimSpace(c.Query("ids")); raw != "" {
+		for _, part := range strings.Split(raw, ",") {
+			id, err := strconv.ParseInt(strings.TrimSpace(part), 10, 64)
+			if err != nil || id <= 0 {
+				errs["ids"] = "must be lead ids separated by commas"
+				break
+			}
+			q.IDs = append(q.IDs, id)
+		}
+		if len(q.IDs) > model.MaxBulkLeads {
+			errs["ids"] = fmt.Sprintf("at most %d leads at a time", model.MaxBulkLeads)
+		}
+	}
+
 	if raw := strings.TrimSpace(c.Query("sort_by")); raw != "" {
 		if !model.SortableLeadFields[raw] {
 			errs["sort_by"] = fmt.Sprintf("%q is not a sortable field", raw)
@@ -98,7 +144,7 @@ func parseLeadQuery(c *gin.Context) (model.LeadQuery, model.ValidationErrors) {
 	}
 
 	if page, err := strconv.Atoi(c.Query("page")); err == nil && page > 1 {
-		q.Page = page
+		q.Page = min(page, model.MaxPage)
 	}
 
 	if size, err := strconv.Atoi(c.Query("page_size")); err == nil && size > 0 {
@@ -118,6 +164,11 @@ func (h *Handler) createLead(c *gin.Context) {
 	if !bindJSON(c, &in) {
 		return
 	}
+	// Someone who cannot assign leads creates them for themselves, whatever
+	// the request says: the owner comes from the session, not the body.
+	if viewer := viewerOf(c); !viewer.CanAssign() {
+		in.OwnerID = &viewer.MemberID
+	}
 
 	in.Normalize()
 	if errs := in.Validate(); errs.Any() {
@@ -130,6 +181,7 @@ func (h *Handler) createLead(c *gin.Context) {
 		h.respondStoreError(c, err, "create lead")
 		return
 	}
+	lead = h.withFreshQuality(c, lead)
 
 	// 201 Created plus a Location header pointing at the new resource: the
 	// conventional REST answer to "what did you just make, and where is it?"
@@ -178,6 +230,11 @@ func (h *Handler) updateLead(c *gin.Context) {
 	if !bindJSON(c, &in) {
 		return
 	}
+	// The edit form sends the owner too; someone who cannot assign leads
+	// keeps the lead (it is theirs, or they could not see it).
+	if viewer := viewerOf(c); !viewer.CanAssign() {
+		in.OwnerID = &viewer.MemberID
+	}
 
 	in.Normalize()
 	if errs := in.Validate(); errs.Any() {
@@ -190,6 +247,8 @@ func (h *Handler) updateLead(c *gin.Context) {
 		h.respondStoreError(c, err, "update lead")
 		return
 	}
+	lead = h.withFreshQuality(c, lead)
+	h.sendThankYou(lead)
 
 	respondData(c, http.StatusOK, lead)
 }
@@ -211,14 +270,72 @@ func (h *Handler) updateLeadStage(c *gin.Context) {
 		return
 	}
 
+	in.CloseInput.Normalize()
 	if errs := in.Validate(); errs.Any() {
 		respondValidationError(c, errs)
 		return
 	}
 
-	lead, err := h.store.UpdateLeadStage(c.Request.Context(), id, in.Stage)
+	lead, err := h.store.UpdateLeadStage(c.Request.Context(), id, in)
 	if err != nil {
 		h.respondStoreError(c, err, "update lead stage")
+		return
+	}
+	h.sendThankYou(lead)
+
+	respondData(c, http.StatusOK, lead)
+}
+
+// ---------------------------------------------------------------------------
+// PATCH /api/leads/:id/owner and /notes
+// ---------------------------------------------------------------------------
+
+// updateLeadOwner gives the lead to another team member, or to nobody. The
+// store logs the change on the timeline. Returns the lead with its timeline.
+func (h *Handler) updateLeadOwner(c *gin.Context) {
+	id, ok := parseIDParam(c)
+	if !ok {
+		return
+	}
+
+	var in model.OwnerInput
+	if !bindJSON(c, &in) {
+		return
+	}
+	if errs := in.Validate(); errs.Any() {
+		respondValidationError(c, errs)
+		return
+	}
+
+	lead, err := h.store.UpdateLeadOwner(c.Request.Context(), id, in.OwnerID)
+	if err != nil {
+		h.respondStoreError(c, err, "update lead owner")
+		return
+	}
+
+	respondData(c, http.StatusOK, lead)
+}
+
+// updateLeadNotes replaces the lead's notes and nothing else.
+func (h *Handler) updateLeadNotes(c *gin.Context) {
+	id, ok := parseIDParam(c)
+	if !ok {
+		return
+	}
+
+	var in model.NotesInput
+	if !bindJSON(c, &in) {
+		return
+	}
+	in.Normalize()
+	if errs := in.Validate(); errs.Any() {
+		respondValidationError(c, errs)
+		return
+	}
+
+	lead, err := h.store.UpdateLeadNotes(c.Request.Context(), id, in.Notes)
+	if err != nil {
+		h.respondStoreError(c, err, "update lead notes")
 		return
 	}
 
@@ -288,6 +405,10 @@ func (h *Handler) createActivity(c *gin.Context) {
 	}
 
 	activity, err := h.store.CreateActivity(c.Request.Context(), id, in)
+	if err == nil {
+		// A logged call or meeting is evidence for the lead's quality.
+		h.refreshQuality(c, id)
+	}
 	if err != nil {
 		// A missing lead surfaces as a foreign-key violation, which the store
 		// has already translated into ErrNotFound -> 404.
@@ -296,6 +417,52 @@ func (h *Handler) createActivity(c *gin.Context) {
 	}
 
 	respondData(c, http.StatusCreated, activity)
+}
+
+// PUT /api/activities/:id corrects the text of a note, call, email or meeting.
+// Entries the server wrote (stage and owner changes, task updates) are a
+// record of what happened and answer 409.
+func (h *Handler) updateActivity(c *gin.Context) {
+	id, ok := parseIDParam(c)
+	if !ok {
+		return
+	}
+
+	var in model.ActivityUpdateInput
+	if !bindJSON(c, &in) {
+		return
+	}
+	in.Normalize()
+	if errs := in.Validate(); errs.Any() {
+		respondValidationError(c, errs)
+		return
+	}
+
+	activity, err := h.store.UpdateActivity(c.Request.Context(), id, in.Note)
+	if err == nil {
+		h.refreshQuality(c, activity.LeadID)
+	}
+	if err != nil {
+		h.respondStoreError(c, err, "update activity")
+		return
+	}
+
+	respondData(c, http.StatusOK, activity)
+}
+
+// DELETE /api/activities/:id removes a note, call, email or meeting.
+func (h *Handler) deleteActivity(c *gin.Context) {
+	id, ok := parseIDParam(c)
+	if !ok {
+		return
+	}
+
+	if err := h.store.DeleteActivity(c.Request.Context(), id); err != nil {
+		h.respondStoreError(c, err, "delete activity")
+		return
+	}
+
+	c.Status(http.StatusNoContent)
 }
 
 // ---------------------------------------------------------------------------
@@ -312,7 +479,7 @@ func parseIDParam(c *gin.Context) (int64, bool) {
 	id, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil || id <= 0 {
 		respondError(c, http.StatusBadRequest, codeBadRequest,
-			fmt.Sprintf("%q is not a valid lead id.", raw))
+			fmt.Sprintf("%q is not a valid id.", raw))
 		return 0, false
 	}
 
@@ -328,6 +495,25 @@ func bindJSON(c *gin.Context, dst any) bool {
 		return false
 	}
 	return true
+}
+
+const ownerParamError = `must be a team member's id or "none"`
+
+// parseOwnerParam reads ?owner=: a member's id, "none" for nobody's, or
+// empty/"all" for everyone. false means the value was neither.
+func parseOwnerParam(c *gin.Context) (model.OwnerFilter, bool) {
+	raw := strings.ToLower(strings.TrimSpace(c.Query("owner")))
+	switch raw {
+	case "", "all":
+		return model.OwnerFilter{}, true
+	case "none":
+		return model.OwnerFilter{Unowned: true}, true
+	}
+	id, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || id <= 0 {
+		return model.OwnerFilter{}, false
+	}
+	return model.OwnerFilter{OwnerID: &id}, true
 }
 
 // firstNonEmpty returns the first argument that is not the empty string.

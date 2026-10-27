@@ -138,6 +138,17 @@ func TestLeadInputValidate(t *testing.T) {
 		{"unknown source", func(in *LeadInput) { in.Source = Source("carrier-pigeon") }, "source"},
 		{"unknown stage", func(in *LeadInput) { in.Stage = Stage("maybe") }, "stage"},
 		{"over-long notes", func(in *LeadInput) { in.Notes = repeat("x", 5001) }, "notes"},
+		// Postgres counts characters: 120 Devanagari letters (360 bytes) fit.
+		{"120-character Hindi name", func(in *LeadInput) { in.Name = repeat("क", 120) }, ""},
+		{"121-character Hindi name", func(in *LeadInput) { in.Name = repeat("क", 121) }, "name"},
+		{"5000-character Hindi notes", func(in *LeadInput) { in.Notes = repeat("न", 5000) }, ""},
+		// Unicode spaces the database's [:space:] rejects must be caught here.
+		{"email with no-break space", func(in *LeadInput) { in.Email = "ada lovelace@example.com" }, "email"},
+		{"email with narrow no-break space", func(in *LeadInput) { in.Email = "ada@exa mple.com" }, "email"},
+		{"email with ideographic space", func(in *LeadInput) { in.Email = "ada@example.　com" }, "email"},
+		{"email with next-line char", func(in *LeadInput) { in.Email = "ada\u0085@example.com" }, "email"},
+		{"email with vertical tab", func(in *LeadInput) { in.Email = "ada\v@example.com" }, "email"},
+		{"email with non-ASCII letters is fine", func(in *LeadInput) { in.Email = "आदा@example.com" }, ""},
 	}
 
 	for _, tc := range cases {

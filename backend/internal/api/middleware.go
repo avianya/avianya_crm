@@ -3,8 +3,12 @@ package api
 import (
 	"log/slog"
 	"net/http"
+	"net/url"
 	"runtime/debug"
 	"slices"
+	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -26,7 +30,10 @@ func corsMiddleware(allowedOrigins []string) gin.HandlerFunc {
 			h := c.Writer.Header()
 			h.Set("Access-Control-Allow-Origin", origin)
 			h.Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-			h.Set("Access-Control-Allow-Headers", "Content-Type, Accept")
+			h.Set("Access-Control-Allow-Headers", "Content-Type, Accept, X-Admin-Key, X-Requested-With")
+			// The session cookie travels with requests from the listed
+			// origins only; "*" is never combined with credentials.
+			h.Set("Access-Control-Allow-Credentials", "true")
 			h.Set("Access-Control-Max-Age", "300") // cache the preflight for 5 min
 
 			// Responses vary by Origin, so any cache in between must key on it.
@@ -63,7 +70,7 @@ func requestLogger(logger *slog.Logger) gin.HandlerFunc {
 			slog.Duration("duration", time.Since(start).Round(time.Microsecond)),
 		}
 		if raw := c.Request.URL.RawQuery; raw != "" {
-			attrs = append(attrs, slog.String("query", raw))
+			attrs = append(attrs, slog.String("query", redactQuery(raw)))
 		}
 
 		// Server faults are the ones worth waking someone up for; client
@@ -106,6 +113,77 @@ func recoveryMiddleware(logger *slog.Logger) gin.HandlerFunc {
 			}
 		}()
 
+		c.Next()
+	}
+}
+
+// sensitiveParams are query parameters whose values are secrets: Meta's webhook
+// check sends the verify token in the URL, and Graph-style callers may send an
+// access token. Their values never reach the log.
+var sensitiveParams = []string{"hub.verify_token", "access_token", "appsecret_proof", "token", "key"}
+
+// redactQuery is the query string with every sensitive value replaced, for
+// logging. A query that does not parse is dropped whole rather than risk it.
+func redactQuery(raw string) string {
+	values, err := url.ParseQuery(raw)
+	if err != nil {
+		return "[unparseable query omitted]"
+	}
+	changed := false
+	for name := range values {
+		if slices.Contains(sensitiveParams, strings.ToLower(name)) {
+			values[name] = []string{"[redacted]"}
+			changed = true
+		}
+	}
+	if !changed {
+		return raw
+	}
+	return values.Encode()
+}
+
+// adminKeyHeader carries ADMIN_API_KEY, for scripts: a request with the
+// right key acts as an admin (see authenticate).
+const adminKeyHeader = "X-Admin-Key"
+
+// rateLimit allows each caller (by address) at most perMinute requests a
+// minute through the routes it guards, and answers 429 past that. It slows
+// password and key guessing, and keeps Meta from being called in a loop.
+// Kept in memory: enough for one server, and it forgets on restart.
+func rateLimit(perMinute int) gin.HandlerFunc {
+	type window struct {
+		start time.Time
+		count int
+	}
+	var (
+		mu      sync.Mutex
+		callers = map[string]*window{}
+	)
+	return func(c *gin.Context) {
+		now := time.Now()
+		key := c.ClientIP()
+		mu.Lock()
+		w, ok := callers[key]
+		if !ok || now.Sub(w.start) >= time.Minute {
+			w = &window{start: now}
+			callers[key] = w
+			// Forget callers whose window ended long ago, so the map stays small.
+			if len(callers) > 10_000 {
+				for k, old := range callers {
+					if now.Sub(old.start) >= time.Minute {
+						delete(callers, k)
+					}
+				}
+			}
+		}
+		w.count++
+		over, retry := w.count > perMinute, time.Minute-now.Sub(w.start)
+		mu.Unlock()
+		if over {
+			c.Header("Retry-After", strconv.Itoa(int(retry.Seconds())+1))
+			respondError(c, http.StatusTooManyRequests, codeRateLimited, "Too many requests; please wait a minute and try again.")
+			return
+		}
 		c.Next()
 	}
 }

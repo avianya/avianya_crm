@@ -44,7 +44,10 @@ services:
             # The API's depends_on waits for this. Postgres accepts TCP
             # connections several seconds before it is ready to run queries, so
             # without a real readiness check the API starts too early and dies.
-            test: ["CMD-SHELL", "pg_isready -U crm -d crm_leads"]
+            # -h localhost checks over TCP: the first-run init server only
+            # listens on the socket, so a socket check passes while the schema
+            # is still loading.
+            test: ["CMD-SHELL", "pg_isready -h localhost -U crm -d crm_leads"]
             interval: 5s
             timeout: 5s
             retries: 10
@@ -78,6 +81,31 @@ services:
             # origin the API must allow. It is not the frontend container's name:
             # CORS is about where the *browser* loaded the page from.
             CORS_ALLOWED_ORIGINS: http://localhost:5173
+            # The postgres image runs on UTC, which puts "today" a day behind
+            # India until 05:30. Every session uses this zone instead.
+            APP_TIMEZONE: Asia/Kolkata
+            APP_BASE_URL: http://localhost:5173
+            # Reminder emails. Empty means in-app reminders only. Set these in
+            # a .env file next to this one (never commit it) to send email;
+            # see backend/.env.example for the Gmail steps.
+            SMTP_HOST: ${SMTP_HOST:-}
+            SMTP_PORT: ${SMTP_PORT:-587}
+            SMTP_USERNAME: ${SMTP_USERNAME:-}
+            SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+            SMTP_FROM: ${SMTP_FROM:-}
+            # Ad lead forms (Meta Lead Ads, Google Ads lead forms). Empty means
+            # that webhook refuses everything. Set these in the same .env file;
+            # see backend/.env.example for where each value comes from.
+            PUBLIC_API_URL: ${PUBLIC_API_URL:-}
+            META_APP_SECRET: ${META_APP_SECRET:-}
+            META_VERIFY_TOKEN: ${META_VERIFY_TOKEN:-}
+            META_PAGE_ACCESS_TOKEN: ${META_PAGE_ACCESS_TOKEN:-}
+            META_GRAPH_VERSION: ${META_GRAPH_VERSION:-}
+            GOOGLE_LEADS_KEY: ${GOOGLE_LEADS_KEY:-}
+            # Meta CAPI settings page: the admin key that guards it, and the
+            # key credentials saved there are encrypted with.
+            ADMIN_API_KEY: ${ADMIN_API_KEY:-}
+            SECRETS_ENCRYPTION_KEY: ${SECRETS_ENCRYPTION_KEY:-}
 
         ports:
             - "8080:8080"

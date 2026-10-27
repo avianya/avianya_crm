@@ -1,4 +1,4 @@
-import { Check } from "lucide-react";
+import { Check, X } from "lucide-react";
 
 import {
     PIPELINE_STAGES,
@@ -23,10 +23,13 @@ import type { Stage } from "../lib/types";
  */
 export function StageProgress({
     stage,
+    closedFrom = null,
     onSelect,
     disabled = false,
 }: {
     stage: Stage;
+    /** For a Won or Lost lead, the open stage it closed from (from its stage history). */
+    closedFrom?: Stage | null;
     onSelect?: (stage: Stage) => void;
     disabled?: boolean;
 }) {
@@ -34,8 +37,11 @@ export function StageProgress({
     const currentIndex = pipelineIndex(stage);
 
     // A won deal has been through the whole pipeline, so every step reads as
-    // complete. A lost one is shown with the track greyed out from where it died.
-    const filledThrough = stage === "won" ? PIPELINE_STAGES.length - 1 : currentIndex;
+    // complete. A lost one is filled up to the step where it was lost, which is
+    // marked, and greyed out after it.
+    const lostAt = stage === "lost" && closedFrom ? pipelineIndex(closedFrom) : -1;
+    const filledThrough =
+        stage === "won" ? PIPELINE_STAGES.length - 1 : lostAt >= 0 ? lostAt : currentIndex;
 
     return (
         <div className="space-y-4">
@@ -46,7 +52,8 @@ export function StageProgress({
 
                     const isComplete = index < filledThrough || stage === "won";
                     const isCurrent = pipelineStage === stage;
-                    const isUpcoming = !isComplete && !isCurrent;
+                    const isLostHere = index === lostAt;
+                    const isUpcoming = !isComplete && !isCurrent && !isLostHere;
 
                     return (
                         <li
@@ -61,7 +68,9 @@ export function StageProgress({
                                 index > 0 &&
                                     (isComplete || isCurrent
                                         ? "before:bg-brand-500"
-                                        : "before:bg-slate-200 dark:before:bg-slate-700"),
+                                        : isLostHere
+                                          ? "before:bg-rose-300 dark:before:bg-rose-800"
+                                          : "before:bg-slate-200 dark:before:bg-slate-700"),
                             )}
                         >
                             <button
@@ -72,7 +81,9 @@ export function StageProgress({
                                 aria-label={
                                     isCurrent
                                         ? `Current stage: ${style.label}`
-                                        : `Move to ${style.label}`
+                                        : isLostHere
+                                          ? `Lost at ${style.label}. Move back to ${style.label}`
+                                          : `Move to ${style.label}`
                                 }
                                 title={onSelect ? `Move to ${style.label}` : style.label}
                                 className={cx(
@@ -86,12 +97,16 @@ export function StageProgress({
                                         cx(
                                             "border-brand-500 bg-white text-brand-600 ring-4 ring-brand-500/20 dark:bg-slate-900 dark:text-brand-400",
                                         ),
+                                    isLostHere &&
+                                        "border-rose-400 bg-rose-50 text-rose-600 dark:border-rose-700 dark:bg-rose-950/60 dark:text-rose-300",
                                     isUpcoming &&
                                         "border-slate-200 bg-white text-slate-400 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-500",
                                 )}
                             >
                                 {isComplete ? (
                                     <Check className="size-4" aria-hidden="true" />
+                                ) : isLostHere ? (
+                                    <X className="size-4" aria-hidden="true" />
                                 ) : (
                                     <Icon className="size-4" aria-hidden="true" />
                                 )}
@@ -102,7 +117,9 @@ export function StageProgress({
                                     "text-center text-[11px] leading-tight font-medium transition-colors",
                                     isCurrent
                                         ? "text-brand-700 dark:text-brand-300"
-                                        : isComplete
+                                        : isLostHere
+                                          ? "text-rose-700 dark:text-rose-300"
+                                          : isComplete
                                           ? "text-slate-700 dark:text-slate-300"
                                           : "text-slate-400 dark:text-slate-500",
                                 )}
@@ -118,7 +135,12 @@ export function StageProgress({
                 open, and as a single verdict banner once it has closed. */}
             <div className="flex gap-2 border-t border-slate-100 pt-4 dark:border-slate-800">
                 {closed ? (
-                    <ClosedBanner stage={stage} onReopen={onSelect} disabled={disabled} />
+                    <ClosedBanner
+                        stage={stage}
+                        closedFrom={closedFrom}
+                        onReopen={onSelect}
+                        disabled={disabled}
+                    />
                 ) : (
                     <>
                         <OutcomeButton
@@ -170,16 +192,20 @@ function OutcomeButton({
 
 function ClosedBanner({
     stage,
+    closedFrom,
     onReopen,
     disabled,
 }: {
     stage: Stage;
+    closedFrom: Stage | null;
     onReopen?: (stage: Stage) => void;
     disabled?: boolean;
 }) {
     const style = STAGE_STYLES[stage];
     const Icon = style.icon;
     const won = stage === "won";
+    // Reopen to where the deal actually was; Negotiation when history is silent.
+    const reopenTo: Stage = closedFrom ?? "negotiation";
 
     return (
         <div
@@ -202,7 +228,8 @@ function ClosedBanner({
                         : "text-rose-900 dark:text-rose-200",
                 )}
             >
-                {won ? "This deal was won." : "This deal was lost."}
+                {won ? "This deal was won" : "This deal was lost"}
+                {closedFrom ? ` at ${STAGE_STYLES[closedFrom].label}.` : "."}
             </p>
 
             {/* Reopening matters in practice: deals get revived, and a CRM that
@@ -211,7 +238,8 @@ function ClosedBanner({
                 <button
                     type="button"
                     disabled={disabled}
-                    onClick={() => onReopen("negotiation")}
+                    onClick={() => onReopen(reopenTo)}
+                    title={`Move back to ${STAGE_STYLES[reopenTo].label}`}
                     className="rounded-md px-2 py-1 text-xs font-medium text-slate-600 underline-offset-2 transition-colors hover:underline disabled:opacity-50 dark:text-slate-400"
                 >
                     Reopen

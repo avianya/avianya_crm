@@ -1,13 +1,31 @@
 import { useEffect, useState } from "react";
 
-import { ApiError } from "../lib/api";
-import { STAGE_ORDER, STAGE_STYLES, SOURCE_STYLES } from "../lib/display";
+import { ApiError, api } from "../lib/api";
+import { MAX_CLOSE_NOTE, reasonsFor } from "../lib/closeReasons";
+import { STAGE_ORDER, STAGE_STYLES, SOURCE_STYLES, formatMoney, isClosedStage } from "../lib/display";
 import type { Lead, LeadInput, Source, Stage } from "../lib/types";
+import { useAsync } from "../hooks/useAsync";
+import { useTeam } from "../hooks/useTeam";
 import { Modal } from "./Modal";
 import { Button, Field, Select, TextInput, Textarea } from "./ui";
+import { useAuth } from "../context/auth";
+
+/**
+ * What the form holds while someone is typing.
+ *
+ * Identical to LeadInput except the deal value, which is kept as the raw text
+ * of the input: "" means "not estimated", and a half-typed value must not be
+ * coerced to a number (or to NaN) before the user has finished. The close
+ * reason ("" for none) only counts while the stage is Won or Lost.
+ */
+type FormValues = Omit<LeadInput, "deal_value" | "close_reason" | "close_note"> & {
+    deal_value: string;
+    close_reason: string;
+    close_note: string;
+};
 
 /** An empty form, used when creating. */
-const BLANK_FORM: LeadInput = {
+const BLANK_FORM: FormValues = {
     name: "",
     company: "",
     email: "",
@@ -15,10 +33,14 @@ const BLANK_FORM: LeadInput = {
     source: "website",
     stage: "new",
     notes: "",
+    deal_value: "",
+    owner_id: null,
+    close_reason: "",
+    close_note: "",
 };
 
 /** Turns an existing lead into form values. */
-function toFormValues(lead: Lead): LeadInput {
+function toFormValues(lead: Lead): FormValues {
     return {
         name: lead.name,
         company: lead.company,
@@ -28,7 +50,28 @@ function toFormValues(lead: Lead): LeadInput {
         source: lead.source,
         stage: lead.stage,
         notes: lead.notes,
+        deal_value: lead.deal_value === null ? "" : String(lead.deal_value),
+        // PUT replaces every field, so the owner must travel with the edit or
+        // saving the form would quietly unassign the lead.
+        owner_id: lead.owner_id,
+        close_reason: lead.close_reason ?? "",
+        close_note: lead.close_note ?? "",
     };
+}
+
+/** Matches model.MaxDealValue on the backend. */
+const MAX_DEAL_VALUE = 1_000_000_000_000;
+
+/**
+ * Reads the deal value text: digits only, with commas allowed because people
+ * type "2,50,000". Returns null for blank and undefined for anything invalid.
+ */
+function parseDealValue(text: string): number | null | undefined {
+    const cleaned = text.replace(/[,\s]/g, "");
+    if (cleaned === "") return null;
+    if (!/^\d+$/.test(cleaned)) return undefined;
+    const value = Number(cleaned);
+    return value <= MAX_DEAL_VALUE ? value : undefined;
 }
 
 /**
@@ -39,7 +82,7 @@ function toFormValues(lead: Lead): LeadInput {
  * server's per-field errors are merged in on submit, so a rule that only exists
  * there (the unique email) still lands on the right input.
  */
-function validate(values: LeadInput): Record<string, string> {
+function validate(values: FormValues, previousStage: Stage | undefined): Record<string, string> {
     const errors: Record<string, string> = {};
 
     if (!values.name.trim()) errors.name = "Full name is required.";
@@ -59,6 +102,17 @@ function validate(values: LeadInput): Record<string, string> {
         errors.phone = "Use 6-24 characters: digits and + ( ) - . / space.";
 
     if (values.notes.length > 5000) errors.notes = "Must be 5000 characters or fewer.";
+
+    if (parseDealValue(values.deal_value) === undefined)
+        errors.deal_value = "Enter a whole number of rupees, e.g. 250000.";
+
+    // Losing a deal needs a reason; editing one already lost does not.
+    if (values.stage === "lost" && previousStage !== "lost" && !values.close_reason)
+        errors.close_reason = "Say why the deal was lost.";
+    if (isClosedStage(values.stage) && values.close_reason === "other" && !values.close_note.trim())
+        errors.close_note = 'Add a note to explain "Other".';
+    if (isClosedStage(values.stage) && values.close_note.trim() && !values.close_reason)
+        errors.close_reason = "Choose a reason for the note.";
 
     return errors;
 }
@@ -83,12 +137,19 @@ export function LeadFormModal({
     /** The lead being edited, or undefined when creating a new one. */
     lead?: Lead;
 }) {
+    const { is } = useAuth();
+    // Only admins and managers choose who a lead is assigned to; the server
+    // assigns a salesperson's leads to themselves whatever is sent.
+    const canAssign = is("admin", "manager");
     const isEditing = lead !== undefined;
 
-    const [values, setValues] = useState<LeadInput>(BLANK_FORM);
+    const [values, setValues] = useState<FormValues>(BLANK_FORM);
     const [errors, setErrors] = useState<Record<string, string>>({});
     const [formError, setFormError] = useState<string | null>(null);
     const [saving, setSaving] = useState(false);
+    const team = useTeam();
+    const { data: meta } = useAsync((signal) => api.meta(signal), []);
+    const reasons = reasonsFor(meta, values.stage);
 
     // Reset whenever the dialog opens, so a cancelled edit does not leak its
     // values into the next lead you open.
@@ -100,7 +161,7 @@ export function LeadFormModal({
     }, [open, lead]);
 
     /** Updates one field and clears any error on it as the user types. */
-    const setField = <K extends keyof LeadInput>(key: K, value: LeadInput[K]) => {
+    const setField = <K extends keyof FormValues>(key: K, value: FormValues[K]) => {
         setValues((current) => ({ ...current, [key]: value }));
         setErrors((current) => {
             if (!current[key]) return current;
@@ -110,10 +171,16 @@ export function LeadFormModal({
         });
     };
 
+    // Echo the typed number back formatted ("₹2,50,000"), so a missing or
+    // extra zero is obvious before saving.
+    const parsedDealValue = parseDealValue(values.deal_value);
+    const dealValuePreview =
+        typeof parsedDealValue === "number" ? `= ${formatMoney(parsedDealValue)}` : undefined;
+
     const handleSubmit = async (event: React.FormEvent) => {
         event.preventDefault();
 
-        const found = validate(values);
+        const found = validate(values, lead?.stage);
         if (Object.keys(found).length > 0) {
             setErrors(found);
             return;
@@ -130,6 +197,12 @@ export function LeadFormModal({
                 email: values.email.trim(),
                 phone: values.phone.trim(),
                 notes: values.notes.trim(),
+                // validate() has already rejected anything unparseable.
+                deal_value: parseDealValue(values.deal_value) ?? null,
+                // A reason only travels with Won or Lost; the server rejects one
+                // on an open stage.
+                close_reason: isClosedStage(values.stage) ? values.close_reason || null : null,
+                close_note: isClosedStage(values.stage) ? values.close_note.trim() : "",
             });
             onClose();
         } catch (cause) {
@@ -263,9 +336,13 @@ export function LeadFormModal({
                                 id="lead-stage"
                                 value={values.stage}
                                 invalid={Boolean(errors.stage)}
-                                onChange={(event) =>
-                                    setField("stage", event.target.value as Stage)
-                                }
+                                onChange={(event) => {
+                                    setField("stage", event.target.value as Stage);
+                                    // Won and Lost have different reasons, so a
+                                    // reason never carries over between them.
+                                    setField("close_reason", "");
+                                    setField("close_note", "");
+                                }}
                             >
                                 {STAGE_ORDER.map((stage) => (
                                     <option key={stage} value={stage}>
@@ -274,7 +351,102 @@ export function LeadFormModal({
                                 ))}
                             </Select>
                         </Field>
+
+                        <Field
+                            id="lead-deal-value"
+                            label="Deal value (₹)"
+                            error={errors.deal_value}
+                            hint={
+                                dealValuePreview ??
+                                "Optional. Leave blank if it has not been estimated."
+                            }
+                        >
+                            <TextInput
+                                id="lead-deal-value"
+                                inputMode="numeric"
+                                value={values.deal_value}
+                                invalid={Boolean(errors.deal_value)}
+                                maxLength={20}
+                                placeholder="250000"
+                                onChange={(event) => setField("deal_value", event.target.value)}
+                            />
+                        </Field>
+
+                        {canAssign ? (
+                        <Field
+                            id="lead-owner"
+                            label="Assigned to"
+                            error={errors.owner_id}
+                            hint="Gets the reminders for this lead's events."
+                        >
+                            <Select
+                                id="lead-owner"
+                                value={values.owner_id ?? ""}
+                                invalid={Boolean(errors.owner_id)}
+                                disabled={team.loading}
+                                onChange={(event) =>
+                                    setField("owner_id", event.target.value ? Number(event.target.value) : null)
+                                }
+                            >
+                                <option value="">{team.loading ? "Loading team…" : "Nobody"}</option>
+                                {(team.data ?? []).map((member) => (
+                                    <option key={member.id} value={member.id}>
+                                        {member.name}
+                                    </option>
+                                ))}
+                            </Select>
+                        </Field>
+                        ) : (
+                            <Field id="lead-owner" label="Assigned to" hint="Leads you add are assigned to you.">
+                                <TextInput id="lead-owner" value="You" disabled />
+                            </Field>
+                        )}
                     </div>
+
+                    {isClosedStage(values.stage) && (
+                        <div className="grid gap-4 rounded-xl border border-slate-200 p-4 sm:grid-cols-2 dark:border-slate-800">
+                            <Field
+                                id="lead-close-reason"
+                                label={values.stage === "lost" ? "Why was it lost?" : "Why was it won?"}
+                                required={values.stage === "lost" && lead?.stage !== "lost"}
+                                error={errors.close_reason}
+                                hint={values.stage === "won" ? "Optional." : "Feeds the loss report."}
+                            >
+                                <Select
+                                    id="lead-close-reason"
+                                    value={values.close_reason}
+                                    invalid={Boolean(errors.close_reason)}
+                                    onChange={(event) => setField("close_reason", event.target.value)}
+                                >
+                                    <option value="">
+                                        {values.stage === "lost" ? "Choose a reason" : "No reason"}
+                                    </option>
+                                    {reasons.map((option) => (
+                                        <option key={option.value} value={option.value}>
+                                            {option.label}
+                                        </option>
+                                    ))}
+                                </Select>
+                            </Field>
+                            <Field
+                                id="lead-close-note"
+                                label="Reason note"
+                                error={errors.close_note}
+                                hint={values.close_reason === "other" ? "Required for Other." : "Optional."}
+                            >
+                                <TextInput
+                                    id="lead-close-note"
+                                    value={values.close_note}
+                                    invalid={Boolean(errors.close_note)}
+                                    maxLength={MAX_CLOSE_NOTE}
+                                    placeholder={
+                                        values.stage === "lost" ? "Competitor offered 20% off" : "Loved the demo"
+                                    }
+                                    onChange={(event) => setField("close_note", event.target.value)}
+                                />
+                            </Field>
+                        </div>
+                    )}
 
                     <Field
                         id="lead-notes"

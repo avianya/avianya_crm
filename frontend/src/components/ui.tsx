@@ -257,6 +257,7 @@ export function Select({ invalid, className, children, ...rest }: SelectProps) {
 
 interface TextareaProps extends TextareaHTMLAttributes<HTMLTextAreaElement> {
     invalid?: boolean;
+    ref?: Ref<HTMLTextAreaElement>;
 }
 
 export function Textarea({ invalid, className, ...rest }: TextareaProps) {
@@ -355,6 +356,41 @@ export function ErrorState({
                 </Button>
             )}
         </div>
+    );
+}
+
+/**
+ * A one-line notice for a refresh that failed while older data is still on
+ * screen. The page keeps showing what it had instead of being replaced by an
+ * ErrorState.
+ */
+export function RefreshError({
+    message,
+    onRetry,
+    className,
+}: {
+    message: string;
+    onRetry?: () => void;
+    className?: string;
+}) {
+    return (
+        <p
+            role="alert"
+            className={cx(
+                "rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700 dark:border-rose-900 dark:bg-rose-950/40 dark:text-rose-300",
+                className,
+            )}
+        >
+            Could not refresh: {message}
+            {onRetry && (
+                <>
+                    {" "}
+                    <button type="button" onClick={onRetry} className="font-medium underline underline-offset-2">
+                        Try again
+                    </button>
+                </>
+            )}
+        </p>
     );
 }
 

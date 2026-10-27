@@ -33,7 +33,7 @@ func newTestStore(t *testing.T) *Store {
 		t.Skip("TEST_DATABASE_URL not set - skipping database integration tests")
 	}
 
-	st, err := New(context.Background(), dsn)
+	st, err := New(context.Background(), dsn, "")
 	if err != nil {
 		t.Fatalf("connect to test database: %v", err)
 	}
@@ -133,7 +133,7 @@ func TestUpdateLeadStageRecordsTheMove(t *testing.T) {
 
 	lead := createTestLead(t, st, uniqueInput(t, "stage"))
 
-	updated, err := st.UpdateLeadStage(ctx, lead.ID, model.StageQualified)
+	updated, err := st.UpdateLeadStage(ctx, lead.ID, model.StageInput{Stage: model.StageQualified})
 	if err != nil {
 		t.Fatalf("UpdateLeadStage: %v", err)
 	}
@@ -169,7 +169,7 @@ func TestUpdateLeadStageToSameStageAddsNothing(t *testing.T) {
 
 	lead := createTestLead(t, st, uniqueInput(t, "nochange"))
 
-	if _, err := st.UpdateLeadStage(ctx, lead.ID, model.StageNew); err != nil {
+	if _, err := st.UpdateLeadStage(ctx, lead.ID, model.StageInput{Stage: model.StageNew}); err != nil {
 		t.Fatalf("UpdateLeadStage: %v", err)
 	}
 
@@ -212,12 +212,17 @@ func TestDeleteLeadCascadesActivities(t *testing.T) {
 
 	// The foreign key's ON DELETE CASCADE should have taken the activities with
 	// it -- no orphan timeline rows, and no cleanup code in Go to forget.
-	activities, err := st.ListActivities(ctx, lead.ID)
-	if err != nil {
-		t.Fatalf("ListActivities after delete: %v", err)
+	// Counted directly: ListActivities now reports a deleted lead as not found.
+	var remaining int
+	if err := st.pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM activities WHERE lead_id = $1`, lead.ID).Scan(&remaining); err != nil {
+		t.Fatalf("count activities after delete: %v", err)
 	}
-	if len(activities) != 0 {
-		t.Errorf("expected activities to cascade away, %d remain", len(activities))
+	if remaining != 0 {
+		t.Errorf("expected activities to cascade away, %d remain", remaining)
+	}
+	if _, err := st.ListActivities(ctx, lead.ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("ListActivities after delete: got %v, want ErrNotFound", err)
 	}
 
 	// Deleting again is a 404, not a silent success.
@@ -311,6 +316,32 @@ func TestListLeadsFiltersAndPaginates(t *testing.T) {
 		}
 		if total != 0 {
 			t.Errorf("searching for a literal %% matched %d leads, want 0", total)
+		}
+	})
+
+	// Last: it adds a fourth marker lead, which the totals above do not expect.
+	t.Run("status filter groups stages", func(t *testing.T) {
+		won := uniqueInput(t, "list-won")
+		won.Company = marker
+		won.Stage = model.StageWon
+		createTestLead(t, st, won)
+
+		for status, want := range map[string]int{"open": 3, "closed": 1, "": 4} {
+			leads, total, err := st.ListLeads(ctx, model.LeadQuery{
+				Search: marker, Status: status,
+				SortBy: "created_at", SortDir: "desc", Page: 1, PageSize: 10,
+			})
+			if err != nil {
+				t.Fatalf("ListLeads(status=%q): %v", status, err)
+			}
+			if total != want {
+				t.Errorf("status=%q: total = %d, want %d", status, total, want)
+			}
+			for _, l := range leads {
+				if (status == "open" && l.Stage.IsClosed()) || (status == "closed" && !l.Stage.IsClosed()) {
+					t.Errorf("status=%q returned a %s lead", status, l.Stage)
+				}
+			}
 		}
 	})
 }
