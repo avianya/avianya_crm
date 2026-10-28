@@ -1,16 +1,18 @@
 # Pipeline — CRM Lead Management
 
-Lead management and lifecycle tracking. **React + TypeScript** frontend, **Go** REST API, **PostgreSQL** database.
+Lead management and lifecycle tracking for a sales team. **React + TypeScript**
+frontend, **Go** REST API, **PostgreSQL** database.
 
-No authentication — the app opens straight to the dashboard and all data is shared, as specified.
+Email-and-password sign-in with roles (admin / manager / sales), per-user lead
+ownership and visibility, and a set of optional integrations — Meta Lead Ads and
+Google Ads lead capture, the Meta Conversions API, Google Sheets export and
+reminder emails — that each stay switched off until you configure them.
 
-> **Just cloned this and want to run it?** → **[`SETUP.md`](./SETUP.md)** walks you
-> through it from scratch — installing Go, creating the database, starting all
-> three pieces — assuming no Go knowledge at all.
->
-> **Want to understand the code?** → [`DOCUMENTATION.md`](./DOCUMENTATION.md) is a Go
-> primer written for someone who has never used it, followed by a file-by-file
-> explanation of everything in this repo and how it is wired together.
+> **New here?**
+> - **Running it** is below — one Docker command, or a step-by-step local setup.
+> - **[`docs/AUTH.md`](./docs/AUTH.md)** — logins, roles and how lead visibility works.
+> - **[`docs/META_CAPI.md`](./docs/META_CAPI.md)** — Meta Conversions API and lead quality.
+> - **[`docs/GOOGLE_SHEETS.md`](./docs/GOOGLE_SHEETS.md)** — the Google Sheets export.
 
 ---
 
@@ -21,33 +23,46 @@ No authentication — the app opens straight to the dashboard and all data is sh
 - [Running it](#running-it)
   - [Option A — Docker (one command)](#option-a--docker-one-command)
   - [Option B — Locally](#option-b--locally)
+- [Environment variables](#environment-variables)
 - [Project layout](#project-layout)
 - [API reference](#api-reference)
 - [Database schema](#database-schema)
 - [Tests](#tests)
 - [Design decisions](#design-decisions)
 - [Assumptions](#assumptions)
-- [What I would do with more time](#what-i-would-do-with-more-time)
-- [Meta Conversions API and lead quality](docs/META_CAPI.md) (separate page)
+- [What's next](#whats-next)
 - [Logins, roles and lead visibility](docs/AUTH.md) (separate page)
+- [Meta Conversions API and lead quality](docs/META_CAPI.md) (separate page)
+- [Google Sheets export](docs/GOOGLE_SHEETS.md) (separate page)
 
 ---
 
 ## What it does
 
+**Accounts, roles and team**
+- Email-and-password sign-in; sign-ups wait for an admin's approval
+- Three roles — **admin**, **manager**, **sales** — gating who can assign leads,
+  manage the team and configure integrations
+- Per-user lead ownership; a salesperson sees only the leads assigned to them,
+  while managers and admins see every lead (see [`docs/AUTH.md`](./docs/AUTH.md))
+- Forgot-password flow emails a one-hour reset link; admins can set or reset a
+  member's password from the Team page
+
 **Dashboard**
 - Total leads, conversion rate, won/lost counts, leads added in the last 7 days
 - Pipeline-by-stage bar chart — every bar is a link into the filtered list
-- The 5 most recently added leads
+- The most recently added leads
 
 **Leads list**
 - Table on desktop, cards on mobile
 - Search by name or company (debounced, case-insensitive)
-- Filter by stage (always-visible chips) and by source
+- Filter by stage (always-visible chips), source and owner
 - Sort by date added, last updated, name, company or stage — in either direction
 - Change a lead's stage inline, without leaving the list
-- Paginated, 10 per page
-- Every filter lives in the URL, so views are shareable and the back button works
+- Select rows for **bulk** owner / stage / source changes or deletion
+- **CSV import** (with a dry-run preview) and **CSV export** of the current view
+- Paginated; every filter lives in the URL, so views are shareable and the back
+  button works
 
 **Add / edit lead**
 - Full name, company, email, phone, source, stage, notes
@@ -57,14 +72,46 @@ No authentication — the app opens straight to the dashboard and all data is sh
 **Lead detail**
 - Full profile with clickable email and phone
 - Step indicator for the lifecycle — click a step to move the lead there
-- "Advance to <next stage>" one-click action
-- Activity timeline, newest first
-- Log a note, call, email or meeting (Ctrl/Cmd+Enter to save)
-- Stage changes are written to the timeline **automatically**, in the same database transaction as the change itself
+- Owner assignment (managers and admins)
+- Tasks and suggested next steps for the lead
+- Send a templated email (preview with `{{fields}}` filled in, then send or
+  just log it)
+- Shareable **booking** and **feedback** links for the customer (see Public pages)
+- Lead-quality score with manager overrides, plus spam / opt-out flags
+- Activity timeline, newest first — log a note, call, email or meeting
+  (Ctrl/Cmd+Enter to save); activities are editable and deletable
+- Stage changes are written to the timeline **automatically**, in the same
+  database transaction as the change itself
+
+**Pipeline board, follow-ups, tasks and reports**
+- A board view with one column per stage
+- A follow-ups queue — who to contact and what is due, filterable by owner
+- Tasks with due dates, rescheduling and completed / cancelled states
+- Reports: weekly intake, source mix and time-in-stage trends
+- Sales intelligence: insights and recommendations over the pipeline
+
+**Integrations** (each optional, configured under Settings)
+- **Meta Lead Ads** and **Google Ads** lead forms captured by webhook into the CRM
+- **Meta Conversions API** — forwards lead events to Meta, with a per-event
+  delivery log and one-click retries (see [`docs/META_CAPI.md`](./docs/META_CAPI.md))
+- **Google Sheets export** over OAuth 2.0 — create a new sheet or pick an existing
+  one, then sync (see [`docs/GOOGLE_SHEETS.md`](./docs/GOOGLE_SHEETS.md))
+- Tokens for all of the above are **encrypted at rest** (AES-256-GCM)
+
+**Automations, notifications and reminders**
+- Admin-defined automation rules that run on events such as lead import
+- In-app notification bell, plus optional reminder emails
+- A per-member **daily digest** email (overdue and due follow-ups, stuck deals,
+  leads going cold) that each member can turn off
+
+**Public pages** (no login, reached by a signed token link)
+- **Booking** — a customer picks a slot to meet
+- **Feedback** — a rating, a comment and an optional referral
 
 **Throughout**
 - Light / dark / follow-the-system theme
-- Skeleton loaders, designed empty states, toast confirmations, keyboard-accessible dialogs and menus
+- Skeleton loaders, designed empty states, toast confirmations, keyboard-accessible
+  dialogs and menus
 
 ---
 
@@ -75,14 +122,18 @@ No authentication — the app opens straight to the dashboard and all data is sh
 | Frontend | React 19 + TypeScript, Vite | Fast dev server; TS catches the null/undefined mistakes a nullable `phone` invites |
 | Styling | Tailwind CSS v4 | Configured entirely from CSS; no config file to keep in sync |
 | Routing | React Router 7 | Filter state in the URL means shareable, bookmarkable views |
-| Charts | Hand-built with `div`s | Seven bars did not justify a charting dependency, and this keeps the stage colours consistent with the rest of the app |
+| Charts | Hand-built with `div`s | A handful of bars did not justify a charting dependency, and this keeps the stage colours consistent with the rest of the app |
 | Icons | lucide-react | Tree-shakeable |
 | Backend | Go 1.26 + Gin | Small, explicit HTTP layer |
 | DB driver | pgx/v5 | The best-maintained Postgres driver for Go; native support for the features this schema uses |
+| Passwords | `golang.org/x/crypto` (bcrypt) | Standard, well-reviewed password hashing |
 | SQL | Hand-written, no ORM | The whole app is filtering, aggregating and paginating — worth seeing the exact query that runs |
 | Database | PostgreSQL 17 | Enums, partial/functional indexes, triggers, window functions |
 
-**Runtime dependencies are deliberately few.** The backend has three direct dependencies (Gin, pgx, godotenv); the frontend has three (React, React Router, lucide-react).
+**Runtime dependencies are deliberately few.** The backend has four direct
+dependencies (Gin, pgx, godotenv, `x/crypto`); the frontend has three (React,
+React Router, lucide-react). The Meta, Google and SMTP integrations are built on
+the standard library's HTTP and `net/smtp` rather than vendor SDKs.
 
 ---
 
@@ -116,6 +167,9 @@ docker compose down -v    # stop and wipe the database (re-seeds on next start)
 > The database is only initialised when its volume is empty. If you change
 > `db/schema.sql`, run `docker compose down -v` to pick it up.
 
+Integrations (Meta, Google, SMTP) stay off until you add their credentials — see
+[Environment variables](#environment-variables).
+
 ---
 
 ### Option B — Locally
@@ -124,7 +178,7 @@ docker compose down -v    # stop and wipe the database (re-seeds on next start)
 
 | Tool | Version | Check |
 |---|---|---|
-| Go | 1.24+ | `go version` |
+| Go | 1.26+ | `go version` |
 | Node.js | 20+ | `node --version` |
 | PostgreSQL | 14+ | `psql --version` |
 
@@ -166,8 +220,11 @@ psql -U postgres -h localhost -c "CREATE DATABASE crm_leads;"
 # Apply the schema (safe to re-run — it is idempotent)
 psql -U postgres -h localhost -d crm_leads -f db/schema.sql
 
-# Load 14 demo leads and 29 activities (optional but recommended)
+# Load the demo leads and activities (optional but recommended)
 psql -U postgres -h localhost -d crm_leads -f db/seed.sql
+
+# Optional: extra data for the sales-intelligence screens
+psql -U postgres -h localhost -d crm_leads -f db/intelligence_seed.sql
 ```
 
 > `seed.sql` **truncates** `leads` and `activities` first, so it always produces
@@ -191,6 +248,14 @@ curl http://localhost:8080/api/health
 
 > Run it from the `backend/` directory — `.env` is read from the working directory.
 
+Nobody can log in until the first admin exists, and the web app cannot create it
+— so make it from the admin command-line tool (run from `backend/`; the password
+is read from `CRM_PASSWORD` or asked for, never passed as a flag):
+
+```bash
+go run ./cmd/admin create-user -email you@yourcompany.com -name "Your Name" -role admin
+```
+
 #### 3. Frontend
 
 In a second terminal:
@@ -206,16 +271,29 @@ Open **http://localhost:5173**.
 
 ---
 
-#### Environment variables
+## Environment variables
 
-`backend/.env` — see [`backend/.env.example`](./backend/.env.example)
+`backend/.env` — see [`backend/.env.example`](./backend/.env.example) for the
+fully commented version. Everything except `DATABASE_URL` has a sensible default,
+and every integration is off until its keys are filled in.
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `APP_ENV` | `development` | `development` = text logs + internal error details in responses. `production` = JSON logs, errors hidden from clients |
 | `PORT` | `8080` | Port the API listens on |
 | `DATABASE_URL` | — | **Required.** `postgres://user:pass@host:port/db?sslmode=disable` |
+| `APP_TIMEZONE` | database setting | IANA zone for "today", "overdue" and report weeks |
+| `APP_BASE_URL` | `http://localhost:5173` | Where the app is opened; used for links in reminder emails |
 | `CORS_ALLOWED_ORIGINS` | `http://localhost:5173,...` | Comma-separated browser origins allowed to call the API |
+| `ADMIN_API_KEY` | — | Optional. A request with header `X-Admin-Key` acts as an admin (for scripts) |
+| `SECRETS_ENCRYPTION_KEY` | — | 32 bytes base64. Encrypts integration tokens at rest; required for Meta CAPI and Google Sheets |
+| `DIGEST_HOUR` | `8` | Hour (in `APP_TIMEZONE`) the per-member daily summary email goes out |
+| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USERNAME` / `SMTP_PASSWORD` / `SMTP_FROM` | empty / `587` | Reminder emails. Leave `SMTP_HOST` empty and reminders stay in-app only |
+| `PUBLIC_API_URL` | — | Public https address Meta/Google reach for lead webhooks |
+| `META_APP_SECRET` / `META_VERIFY_TOKEN` / `META_PAGE_ACCESS_TOKEN` / `META_GRAPH_VERSION` | — | Meta Lead Ads webhook |
+| `GOOGLE_LEADS_KEY` | — | Shared key for the Google Ads lead-form webhook |
+| `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` / `GOOGLE_OAUTH_REDIRECT_URL` | — | Google Sheets export OAuth client |
+| `GOOGLE_PICKER_API_KEY` / `GOOGLE_CLOUD_PROJECT_NUMBER` | — | Optional "choose from Drive" (Google Picker) |
 
 `frontend/.env` — see [`frontend/.env.example`](./frontend/.env.example)
 
@@ -238,6 +316,7 @@ Open **http://localhost:5173**.
 | Browser console: blocked by CORS | The frontend's origin is not in `CORS_ALLOWED_ORIGINS`. Restart the backend after changing it |
 | Frontend `.env` change ignored | Vite reads `.env` at startup — restart `npm run dev` |
 | `go: command not found` | Go is not on your PATH — see the install box above |
+| Meta / Google / Sheets "not set up" | Those integrations need their keys in `backend/.env` (and `SECRETS_ENCRYPTION_KEY`) — see above |
 
 ---
 
@@ -247,30 +326,44 @@ Open **http://localhost:5173**.
 .
 ├── docker-compose.yml          Whole stack in one command
 ├── README.md                   This file
-├── DOCUMENTATION.md            Go primer + full code walkthrough
 │
 ├── db/
-│   ├── schema.sql              Tables, enums, indexes, constraints, trigger
-│   └── seed.sql                14 demo leads, 29 activities
+│   ├── schema.sql              Tables, enums, indexes, constraints, triggers
+│   ├── seed.sql                Demo leads and activities
+│   └── intelligence_seed.sql   Extra data for the sales-intelligence screens
+│
+├── docs/
+│   ├── AUTH.md                 Logins, roles and lead visibility
+│   ├── META_CAPI.md            Meta Conversions API and lead quality
+│   └── GOOGLE_SHEETS.md        Google Sheets export
 │
 ├── backend/                    Go REST API
 │   ├── cmd/server/main.go      Entry point: wiring + graceful shutdown
+│   ├── cmd/admin/main.go       Admin CLI (create the first admin user)
 │   ├── internal/
 │   │   ├── config/             Environment loading
 │   │   ├── model/              Domain types + validation rules  (+ tests)
 │   │   ├── store/              All SQL lives here              (+ tests)
-│   │   └── api/                Routing, middleware, handlers
+│   │   ├── api/                Routing, middleware, handlers
+│   │   ├── auth/               Password hashing, sessions
+│   │   ├── secrets/            AES-256-GCM sealing of integration tokens
+│   │   ├── mail/               SMTP sending for reminders and digests
+│   │   ├── meta/ · metaads/    Meta Lead Ads + Conversions API
+│   │   ├── gsheets/            Google Sheets export
+│   │   └── reminders/          Daily digest + follow-up reminders
 │   ├── Dockerfile
 │   └── .env.example
 │
 └── frontend/                   React + TypeScript
     ├── src/
-    │   ├── lib/                api.ts (HTTP), types.ts, display.ts
-    │   ├── hooks/              useAsync, useDebouncedValue
-    │   ├── context/            Theme, Toasts (hooks split from providers
+    │   ├── lib/                api.ts (HTTP), types.ts, display.ts, templates.ts
+    │   ├── hooks/              useAsync, useDebouncedValue, useTeam, ...
+    │   ├── context/            Auth, Theme, Toasts (hooks split from providers
     │   │                       so Fast Refresh keeps working)
     │   ├── components/         UI primitives + feature components
-    │   ├── pages/              Dashboard, Leads, Lead detail
+    │   ├── pages/              Dashboard, Leads, Lead detail, Pipeline, Tasks,
+    │   │                       Follow-ups, Reports, Automations, Integrations,
+    │   │                       Meta CAPI/Leads, Team, Templates, Public pages
     │   ├── App.tsx             Route table
     │   └── index.css           Tailwind theme + design tokens
     ├── Dockerfile
@@ -296,19 +389,60 @@ Base URL `http://localhost:8080/api`. Every response has one of two shapes:
 { "error": { "code": "...", "message": "...", "details": { "field": "..." } } }
 ```
 
-| Method | Path | Purpose | Success |
-|---|---|---|---|
-| `GET` | `/health` | Service + database liveness | 200 |
-| `GET` | `/meta` | Stage / source / activity-type vocabularies with labels | 200 |
-| `GET` | `/dashboard` | Aggregate summary | 200 |
-| `GET` | `/leads` | List with filters, sort, pagination | 200 |
-| `POST` | `/leads` | Create a lead | 201 + `Location` |
-| `GET` | `/leads/:id` | One lead **with its full activity timeline** | 200 |
-| `PUT` | `/leads/:id` | Replace the editable fields | 200 |
-| `PATCH` | `/leads/:id/stage` | Change stage only (inline dropdown) | 200 |
-| `DELETE` | `/leads/:id` | Delete a lead and its activities | 204 |
-| `GET` | `/leads/:id/activities` | The timeline alone | 200 |
-| `POST` | `/leads/:id/activities` | Log a note / call / email / meeting | 201 |
+All `/api` routes sit behind an authentication middleware. The ways in that do
+**not** need an existing session are sign-in, sign-up and password reset under
+`/auth/*`, `GET /health`, and the token-based `/public/*` links; everything else
+needs a logged-in session, and some endpoints are **admin-** or **manager-only**.
+
+**Auth & account**
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/auth/login` · `/auth/logout` | Start / end a session (rate-limited) |
+| `POST` | `/auth/signup` | Request an account (waits for admin approval) |
+| `POST` | `/auth/forgot` · `/auth/reset` | Email a one-hour reset link, then use it |
+| `GET` | `/auth/me` | The current user |
+| `PUT` | `/auth/password` | Change your own password |
+
+**Leads & activity**
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` / `POST` | `/leads` | List (filters, sort, pagination) / create |
+| `GET` / `PUT` / `DELETE` | `/leads/:id` | One lead with its timeline / replace / delete |
+| `PATCH` | `/leads/:id/stage` · `/owner` · `/notes` | Change stage / assign owner / edit notes |
+| `GET` / `POST` | `/leads/export` · `/leads/import` · `/leads/bulk` | CSV export, CSV import (dry-run option), bulk action |
+| `GET` / `POST` | `/leads/:id/activities` | Timeline / log a note·call·email·meeting |
+| `PUT` / `DELETE` | `/activities/:id` | Edit / delete an activity |
+| `GET` / `POST` | `/leads/:id/tasks`, `/tasks/:id` | Per-lead tasks; update, reschedule, complete, cancel |
+| `POST` | `/leads/:id/emails` · `/email/preview` | Send a templated email / preview it |
+| `GET` | `/leads/:id/links` · `/next-steps` | Booking/feedback links; suggested follow-ups |
+
+**Pipeline, team & settings**
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/dashboard` · `/pipeline` · `/reports` · `/follow-ups` · `/sales-intelligence` | The read-only screens |
+| `GET` | `/meta` | Stage / source / activity-type vocabularies with labels |
+| `*` | `/team/:id/...` | Manage members, roles, passwords, test email, digest (**admin**) |
+| `*` | `/email-templates`, `/automations`, `/lead-assignment` | Templates, automation rules, assignment (**manager/admin**) |
+| `GET` / `POST` | `/notifications/...` | Reminder settings; mark read; retry email |
+
+**Integrations** (**admin**)
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` / `POST` | `/webhooks/meta` · `/webhooks/google` | Inbound ad-lead webhooks |
+| `*` | `/meta/settings` · `/meta/sync` · `/meta/leads` · `/meta/quality-rules` | Meta Lead Ads |
+| `*` | `/integrations/meta-capi/...` | Meta CAPI: token, test event, delivery log, retries, audit |
+| `*` | `/integrations/google-sheets/...` | Connect, pick/create a sheet, sync, retry |
+
+**Public (token link, no login)**
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` / `POST` | `/public/booking/:token` | A customer picks a meeting slot |
+| `GET` / `POST` | `/public/feedback/:token` | A rating, comment and optional referral |
 
 **`GET /leads` query parameters**
 
@@ -317,6 +451,7 @@ Base URL `http://localhost:8080/api`. Every response has one of two shapes:
 | `search` (or `q`) | matches name **or** company, case-insensitive | — |
 | `stage` | `new` `contacted` `qualified` `proposal_sent` `negotiation` `won` `lost` \| `all` | `all` |
 | `source` | `website` `referral` `linkedin` `cold_call` `other` \| `all` | `all` |
+| `owner` | a member id \| `none` \| `all` | `all` |
 | `sort_by` | `created_at` `updated_at` `name` `company` `stage` | `created_at` |
 | `sort_dir` | `asc` `desc` | `desc` |
 | `page` | 1-based | `1` |
@@ -332,60 +467,31 @@ clamped instead, because `?page=0` has an obvious sane reading.
 |---|---|
 | `200` / `201` / `204` | Success / created / deleted |
 | `400` | Malformed JSON, or a non-numeric `:id` |
+| `401` | Not signed in |
+| `403` | Signed in, but the role (or lead ownership) does not allow it |
 | `404` | No such lead, or no such endpoint |
 | `405` | Wrong HTTP method for that path |
 | `409` | Email already belongs to another lead |
 | `422` | Valid JSON, invalid data — `details` names each bad field |
+| `429` | Rate limit hit (sign-in, password reset, public pages) |
 | `500` | Server fault. Full error is logged; the client gets a generic message |
 | `503` | `/health` only: the database is unreachable |
-
-<details>
-<summary><b>Example requests</b></summary>
-
-```bash
-# Qualified leads at "peak", newest first
-curl "http://localhost:8080/api/leads?search=peak&stage=qualified"
-
-# Create
-curl -X POST http://localhost:8080/api/leads \
-  -H 'Content-Type: application/json' \
-  -d '{"name":"Ada Lovelace","company":"Analytical Engines",
-       "email":"ada@example.com","phone":"+91 90000 00000",
-       "source":"referral","stage":"new","notes":"Inbound."}'
-
-# Move along the pipeline (also writes a timeline entry)
-curl -X PATCH http://localhost:8080/api/leads/1/stage \
-  -H 'Content-Type: application/json' -d '{"stage":"qualified"}'
-
-# Log a call
-curl -X POST http://localhost:8080/api/leads/1/activities \
-  -H 'Content-Type: application/json' \
-  -d '{"type":"call","note":"Walked through the proposal."}'
-
-# Validation failure — note the per-field details
-curl -X POST http://localhost:8080/api/leads \
-  -H 'Content-Type: application/json' -d '{"name":"","email":"nope"}'
-```
-</details>
 
 ---
 
 ## Database schema
 
-```
-leads                                   activities
-├── id           BIGSERIAL PK           ├── id         BIGSERIAL PK
-├── name         TEXT NOT NULL          ├── lead_id    BIGINT FK ──┐ ON DELETE
-├── company      TEXT NOT NULL          ├── type       activity_type│  CASCADE
-├── email        TEXT NOT NULL UNIQUE   ├── note       TEXT NOT NULL│
-│                (on lower(email))      └── created_at TIMESTAMPTZ  │
-├── phone        TEXT NULL                                         │
-├── source       lead_source            leads.id ◄─────────────────┘
-├── stage        lead_stage
-├── notes        TEXT NOT NULL DEFAULT ''
-├── created_at   TIMESTAMPTZ
-└── updated_at   TIMESTAMPTZ  ← maintained by trigger
-```
+**23 tables, 3 enum types, 30 indexes, 2 triggers and 2 functions** — grouped by
+area:
+
+- **Core** — `leads`, `activities`, `tasks`, `lead_stage_history`, `deal_alerts`
+- **People & access** — `team_members`, `sessions`, `password_resets`, `audit_log`
+- **Reminders** — `notifications`, `daily_digests`
+- **Email & automation** — `email_templates`, `automation_rules`, `automation_runs`
+- **Ad leads & integrations** — `ad_leads`, `integration_settings`, `app_settings`,
+  `meta_lead_attribution`, `capi_events`
+- **Google Sheets** — `google_oauth_states`, `sheet_syncs`
+- **Public pages** — `customer_links`, `lead_feedback`
 
 **Three enum types** — `lead_stage`, `lead_source`, `activity_type` — so invalid
 values are rejected by the database, not only by the API.
@@ -395,30 +501,18 @@ declaration order rather than alphabetically. `ORDER BY stage` therefore means
 "order by pipeline progress" for free, with no `sort_order` column to keep in
 sync. `?sort_by=stage` uses exactly this.
 
-**Nine indexes**, each for a query the app actually runs:
-
-| Index | Serves |
-|---|---|
-| `leads_pkey`, `activities_pkey` | Primary keys |
-| `leads_email_lower_key` (unique, functional) | Case-insensitive email uniqueness → 409 |
-| `leads_stage_created_at_idx` (composite) | "Filter by stage, newest first" — one index for both the `WHERE` and the `ORDER BY` |
-| `leads_created_at_idx` | Unfiltered list; dashboard's recent-5 |
-| `leads_source_idx` | Source filter |
-| `activities_lead_id_created_at_idx` (composite) | A lead's timeline, newest first, straight out of the index with no sort step |
-| `leads_name_trgm_idx`, `leads_company_trgm_idx` (GIN) | `ILIKE '%term%'` search, which a B-tree cannot accelerate |
-
-There is deliberately **no** standalone index on `activities.lead_id` — the
-composite index already covers lead_id lookups by the leftmost-prefix rule, so a
-second one would only cost write throughput.
-
-The trigram indexes need the `pg_trgm` extension. `schema.sql` wraps that in
-exception handling: if the extension is unavailable the schema still applies
-cleanly and search falls back to a sequential scan.
+Indexes are added for the queries the app actually runs: composite indexes that
+serve a `WHERE` and its `ORDER BY` together, a functional unique index on
+`lower(email)` (case-insensitive uniqueness → 409), and GIN trigram indexes for
+`ILIKE '%term%'` search that a B-tree cannot accelerate. The trigram indexes need
+the `pg_trgm` extension; `schema.sql` wraps that in exception handling, so if the
+extension is unavailable the schema still applies cleanly and search falls back to
+a sequential scan.
 
 **Data integrity beyond types:** `CHECK` constraints reject blank names, malformed
 emails, implausible phone numbers and over-long text. These duplicate the Go
 validation on purpose — a bad migration or a manual `psql` INSERT should not be
-able to create a nameless lead.
+able to create a nameless lead. A trigger keeps `updated_at` current.
 
 ---
 
@@ -431,13 +525,14 @@ go vet ./...                   # static analysis
 gofmt -l .                     # formatting check (silence = clean)
 ```
 
-**Unit tests** (`internal/model`) — 40+ cases across the validation rules,
-normalisation, pagination arithmetic and the stage vocabulary. No database, no
-HTTP server, runs in milliseconds.
+**Unit tests** (`internal/model`, and parts of `internal/api` and `internal/store`)
+cover the validation rules, normalisation, pagination arithmetic, the stage
+vocabulary, quality scoring and more — no database, no HTTP server, runs in
+milliseconds.
 
-**Integration tests** (`internal/store`) — 9 tests against real PostgreSQL,
-covering the behaviour that *is* database behaviour: the `ON DELETE CASCADE`, the
-unique index, and the transaction that keeps a stage change and its timeline entry
+**Integration tests** (`internal/store`) run against a real PostgreSQL and cover
+the behaviour that *is* database behaviour: the `ON DELETE CASCADE`, the unique
+index, and the transaction that keeps a stage change and its timeline entry
 together. They skip unless `TEST_DATABASE_URL` is set:
 
 ```bash
@@ -476,6 +571,20 @@ quiet, back to Contacted") and reopens closed deals. The lifecycle is presented 
 the happy path in the UI, not enforced as a state machine — a CRM that cannot walk
 a stage backwards forces people to lie to it.
 
+**Sessions live in the database.** Sign-in creates a row in `sessions` and sets an
+HttpOnly, SameSite=Lax cookie holding a random token — only its SHA-256 hash is
+stored. Sessions can be revoked server-side, time out on their own, and end the
+moment a password or role changes; sign-ups wait for an admin to approve them
+before any access is granted.
+
+**Integration tokens are encrypted at rest.** Meta and Google credentials entered
+on the settings pages are sealed with AES-256-GCM under `SECRETS_ENCRYPTION_KEY`
+before they touch the database, and are never logged or sent to the browser.
+
+**Every outbound integration call is logged and retryable.** Ad-lead webhooks,
+CAPI events and sheet syncs each record their status, so a transient failure to
+Meta or Google can be replayed from the UI rather than silently lost.
+
 **Filters live in the URL.** Shareable views, a working back button, and the
 dashboard chart can link to `/leads?stage=negotiation` without the list page
 knowing anything about the dashboard.
@@ -484,11 +593,6 @@ knowing anything about the dashboard.
 activities attached. The list gets its total from `COUNT(*) OVER()` — a window
 function evaluated after `WHERE` but before `LIMIT` — so filtering, paging and
 counting are one query, not two.
-
-**Mutations patch state instead of refetching.** A stage change updates the one
-row from the server's response: same data, no flicker, no scroll jump, no second
-round trip. Creates and deletes *do* refetch, because they change which rows
-belong on the page.
 
 **Sort columns are allow-listed.** A sort column cannot be a bind parameter, so it
 is interpolated into the SQL — which is safe only because the value is checked
@@ -513,45 +617,48 @@ terminal.
 
 ## Assumptions
 
-1. **No authentication**, per the brief. All data is global; there is no notion of
-   an owner, and activities record no author.
+1. **Authentication is email-and-password with three roles** (admin, manager,
+   sales). Sign-ups wait for an admin's approval; sales users see only the leads
+   assigned to them, while managers and admins see every lead. The exact
+   visibility rules are in [`docs/AUTH.md`](./docs/AUTH.md).
 2. **Email is required and unique** (case-insensitively). A CRM with two records
    for the same person is worse than a rejected form, and it gives a natural key
    for de-duplication. Enforced by a functional unique index → 409.
-3. **Company is required.** The brief lists it as a column in the main table. An
-   individual with no company should be entered with their own name — supporting
-   genuinely company-less leads would mean making the column nullable.
+3. **Company is required.** An individual with no company should be entered with
+   their own name — supporting genuinely company-less leads would mean making the
+   column nullable.
 4. **Phone is optional**, and stored as `NULL` rather than `''` when absent, so
    "unknown" and "blank" are not two different states. Format is validated loosely
    (digits and `+ ( ) - . / space`) because international numbering is not
    worth being strict about.
 5. **`PUT` replaces, it does not patch.** Every required field must be present;
    omitting `company` blanks it. That is the correct reading of PUT, and it is why
-   the edit form loads the current values first. The one field that gets a partial
-   endpoint is stage, because the inline dropdown needs it.
+   the edit form loads the current values first. Stage, owner and notes get their
+   own `PATCH` endpoints because the inline controls need them.
 6. **Stage transitions are unrestricted** — see Design decisions.
 7. **`notes` vs activities are different things.** `notes` is standing context
-   (budget, org chart, quirks); activities are timestamped events. Notes are edited
-   in place; activities are append-only.
-8. **Deletes are hard deletes**, cascading to activities. A production CRM would
-   soft-delete for recoverability and audit.
+   (budget, org chart, quirks); activities are timestamped events.
+8. **Deletes are hard deletes**, cascading to activities. A production CRM might
+   soft-delete for recoverability; the audit log retains a record of the action.
 9. **Timestamps are `TIMESTAMPTZ`**, stored in UTC and rendered in the viewer's
-   local timezone by the browser.
-10. **`BIGSERIAL` ids, not UUIDs.** Small, sequential and easy to type while
-    testing. A public multi-tenant API would want UUIDs so ids cannot be
-    enumerated.
+   local timezone; "today" and "overdue" are computed in `APP_TIMEZONE`.
+10. **`BIGSERIAL` ids, not UUIDs**, for internal rows — small and easy to type
+    while testing. Public links (booking, feedback) use unguessable tokens so ids
+    are never exposed.
 11. **Page size defaults to 10** so pagination is exercised by realistic data
-    volumes rather than only appearing at a few hundred leads. Capped at 100.
+    volumes. Capped at 100.
 12. **Conversion rate counts closed deals only** — `won / (won + lost)`. Including
     open leads in the denominator would make the number look worse every time a
     new lead arrived.
+13. **Integrations are opt-in.** With no keys configured the app runs fully as a
+    standalone CRM; nothing is ever pretended to be sent.
 
 ---
 
-## What I would do with more time
+## What's next
 
 **Correctness and testing**
-- HTTP-level handler tests using `httptest`, covering each status code end to end
+- More HTTP-level handler tests using `httptest`, covering each status code end to end
 - Frontend component tests (Vitest + Testing Library) for the form, the stage
   picker's keyboard behaviour, and the URL-filter syncing
 - A Playwright smoke test walking create → advance → log activity → delete
@@ -564,8 +671,8 @@ terminal.
 - Cursor (keyset) pagination for the list — `OFFSET` degrades on large tables
 - A `/api/dashboard` cache (30–60s) — it is the most-hit and most expensive endpoint
 - Structured request ids threaded through the logs for tracing
-- Rate limiting, and a `RemoveExtraSlash`-style hardening pass
 - `slog` output to a real aggregator, plus Prometheus metrics on latency and error rate
+- A background worker for retries and syncs instead of request-triggered replays
 
 **Frontend**
 - TanStack Query in place of the hand-rolled `useAsync` — proper caching,
@@ -573,17 +680,14 @@ terminal.
 - Optimistic stage changes with rollback on failure (currently it waits for the server)
 - Virtualised rows, so thousands of leads scroll smoothly
 - Undo on delete (soft delete + a toast action) rather than a confirm dialog
-- Drag-and-drop Kanban board as a second view of the pipeline
-- Bulk selection and bulk stage changes
-- CSV import/export
+- Drag-and-drop on the pipeline board
 - Full-text search across notes and activities, not just name and company
 
 **Product**
-- Owner assignment, follow-up reminders and overdue-lead highlighting
 - Deal value, so the dashboard can show pipeline worth rather than only counts
-- Stage-duration analytics: where do deals stall, and for how long
-- Editable and deletable activities (currently append-only), with an audit trail
-- Email/calendar integration to log activities automatically
+- Deeper stage-duration analytics: where do deals stall, and for how long
+- Two-way calendar integration to log meetings automatically
+- A mobile app, or an installable PWA, for reps in the field
 
 **Types**
 - Generate the TypeScript types from the Go structs (or an OpenAPI spec) instead of
